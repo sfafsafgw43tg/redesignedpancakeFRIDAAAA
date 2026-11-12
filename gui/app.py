@@ -82,6 +82,8 @@ def create_app():
                 android_version=str(data.get("android_version", "14")),
                 name=data.get("name"),
                 proxy=data.get("proxy"),
+                camera_front=data.get("camera_front"),
+                camera_back=data.get("camera_back"),
             )
             return jsonify({"success": True, "device": device})
         except Exception as e:
@@ -192,6 +194,42 @@ def create_app():
             }
         state["sdk"] = config.check_sdk()
         return jsonify(state)
+
+    @app.route("/api/cameras")
+    def get_camera_options():
+        """Camera sources offered by the emulator."""
+        from core.device_manager import CAMERA_DEFAULT_BACK, CAMERA_DEFAULT_FRONT
+
+        return jsonify({
+            "front_default": CAMERA_DEFAULT_FRONT,
+            "back_default": CAMERA_DEFAULT_BACK,
+            "options": [
+                {"value": "emulated", "label": "Emulated (synthetic)"},
+                {"value": "virtualscene", "label": "Virtual scene (3D room)"},
+                {"value": "webcam0", "label": "Host webcam0 (real camera)"},
+                {"value": "webcam1", "label": "Host webcam1"},
+                {"value": "none", "label": "No camera"},
+            ],
+        })
+
+    @app.route("/api/devices/<name>/camera", methods=["POST"])
+    def set_device_cameras(name):
+        """Change front/back cameras of an existing device."""
+        data = request.get_json(silent=True) or {}
+        front = data.get("front")
+        back = data.get("back")
+        if front in ("", None) and back in ("", None):
+            return jsonify({"success": False, "error": "Provide front and/or back"}), 400
+        try:
+            result = manager.set_device_cameras(
+                name,
+                camera_front=None if front in ("", None) else front,
+                camera_back=None if back in ("", None) else back,
+            )
+        except ValueError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
+        result["success"] = True
+        return jsonify(result)
 
     @app.route("/api/devices/<name>/launch", methods=["POST"])
     def launch_device(name):

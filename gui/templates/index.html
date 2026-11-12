@@ -141,6 +141,33 @@
                         </select>
                     </div>
                     <div class="form-group">
+                        <label>Cameras</label>
+                        <div class="camera-grid">
+                            <div>
+                                <small class="hint">Back camera</small>
+                                <input type="text" id="cameraBack" list="cameraOptions"
+                                    value="virtualscene" placeholder="virtualscene">
+                            </div>
+                            <div>
+                                <small class="hint">Front camera</small>
+                                <input type="text" id="cameraFront" list="cameraOptions"
+                                    value="emulated" placeholder="emulated">
+                            </div>
+                        </div>
+                        <datalist id="cameraOptions">
+                            <option value="virtualscene">Virtual scene (3D room)</option>
+                            <option value="emulated">Emulated (synthetic)</option>
+                            <option value="webcam0">Host webcam0 (real camera)</option>
+                            <option value="webcam1">Host webcam1</option>
+                            <option value="none">No camera</option>
+                        </datalist>
+                        <small class="hint">Use <code>webcam0</code> to pass your real webcam to the
+                            emulator. Allowed: emulated, virtualscene, webcam0/1/…, none.</small>
+                        <button class="btn btn-small btn-secondary" type="button" onclick="useWebcamForBoth()">
+                            Use webcam0 for both
+                        </button>
+                    </div>
+                    <div class="form-group">
                         <label>Proxy (optional)</label>
                         <input type="text" id="proxyAddress" placeholder="socks5://127.0.0.1:1080">
                     </div>

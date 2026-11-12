@@ -740,3 +740,20 @@ body {
 .install-log.visible {
     display: block;
 }
+
+
+.camera-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem;
+}
+
+.camera-grid .hint {
+    margin: 0 0 0.35rem;
+}
+
+@media (max-width: 600px) {
+    .camera-grid {
+        grid-template-columns: 1fr;
+    }
+}

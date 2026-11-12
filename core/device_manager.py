@@ -33,6 +33,38 @@ from profiles.profile_generator import generate_device_identity
 from spoof.system_props import generate_props_config
 
 
+# Camera sources accepted by the emulator for -camera-front/-camera-back and
+# hw.camera.front/hw.camera.back:
+#   emulated       - synthetic camera (default front)
+#   virtualscene   - 3D virtual scene (default back)
+#   webcam0..N     - a webcam on the *host* machine
+#   none           - no camera
+CAMERA_EMULATED_MODES = ("emulated", "virtualscene", "none")
+CAMERA_DEFAULT_FRONT = "emulated"
+CAMERA_DEFAULT_BACK = "virtualscene"
+CAMERA_HELP = "emulated, virtualscene, webcam0, webcam1, ..., none"
+
+
+def validate_camera_mode(value, default, role="camera"):
+    """Validate a camera source string (``webcam0``, ``emulated``, ...)."""
+    if value is None or str(value).strip() == "":
+        return default
+    mode = str(value).strip().lower()
+    if mode in CAMERA_EMULATED_MODES:
+        return mode
+    if mode.startswith("webcam"):
+        suffix = mode[len("webcam"):].strip()
+        if suffix == "":
+            return "webcam0"
+        if suffix.isdigit():
+            return f"webcam{int(suffix)}"
+        raise ValueError(
+            f"Invalid {role} '{value}'. Webcams are named webcam0, webcam1, ... "
+            f"(valid options: {CAMERA_HELP})."
+        )
+    raise ValueError(f"Invalid {role} '{value}'. Valid options: {CAMERA_HELP}.")
+
+
 class SdkNotFoundError(RuntimeError):
     pass
 
@@ -124,8 +156,14 @@ class DeviceManager:
     # ------------------------------------------------------------------
     # Creation
     # ------------------------------------------------------------------
-    def create_device(self, model, android_version="14", name=None, proxy=None):
-        """Create a new device with anti-detection profile"""
+    def create_device(self, model, android_version="14", name=None, proxy=None,
+                      camera_front=None, camera_back=None):
+        """Create a new device with anti-detection profile.
+
+        ``camera_front``/``camera_back`` accept the emulator camera sources:
+        ``emulated``, ``virtualscene``, ``webcam0``/``webcam1``/..., ``none``.
+        Use ``webcam0`` to pass the host webcam through to the emulator.
+        """
         model_profile = get_model_profile(model)
         if not model_profile:
             raise ValueError(
@@ -147,6 +185,9 @@ class DeviceManager:
 
         android_info = config.ANDROID_VERSIONS[android_version]
 
+        front = validate_camera_mode(camera_front, CAMERA_DEFAULT_FRONT, "front camera")
+        back = validate_camera_mode(camera_back, CAMERA_DEFAULT_BACK, "back camera")
+
         device = {
             "name": name,
             "model": model,
@@ -156,6 +197,7 @@ class DeviceManager:
             "codename": android_info["codename"],
             "proxy": proxy,
             "identity": identity,
+            "camera": {"front": front, "back": back},
             "created": datetime.now().isoformat(),
             "avd_name": f"antidetect_{name}",
         }
@@ -215,6 +257,14 @@ class DeviceManager:
                 f"avdmanager timed out creating AVD {avd_name}: {exc}"
             ) from exc
 
+        if result.returncode == 0 and ini_file.exists():
+            # avdmanager writes default cameras; apply the user's choice.
+            camera = device.get("camera") or {}
+            self._write_camera_config(
+                config.AVD_HOME / f"{avd_name}.avd" / "config.ini",
+                camera.get("front", CAMERA_DEFAULT_FRONT),
+                camera.get("back", CAMERA_DEFAULT_BACK),
+            )
         if result.returncode != 0 or not ini_file.exists():
             detail = (result.stderr or result.stdout or "").strip()[-2000:]
             raise EmulatorLaunchError(
@@ -279,6 +329,59 @@ class DeviceManager:
             pass
         return "pixel_6"
 
+    @staticmethod
+    def _write_camera_config(config_ini, front, back):
+        """Set/replace hw.camera.front and hw.camera.back in an AVD config.ini."""
+        config_ini = Path(config_ini)
+        if not config_ini.exists():
+            return False
+        try:
+            lines = config_ini.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return False
+        kept = [
+            line for line in lines
+            if not line.strip().lower().startswith(("hw.camera.front", "hw.camera.back"))
+        ]
+        kept.append(f"hw.camera.front={front}")
+        kept.append(f"hw.camera.back={back}")
+        try:
+            config_ini.write_text("\n".join(kept) + "\n", encoding="utf-8")
+            return True
+        except OSError:
+            return False
+
+    def set_device_cameras(self, name, camera_front=None, camera_back=None):
+        """Change camera sources for an existing device.
+
+        Updates the saved device and its AVD ``config.ini``. A running
+        emulator keeps its current cameras until it is restarted.
+        """
+        device = self.get_device(name)
+        if not device:
+            raise ValueError(f"Device not found: {name}")
+
+        camera = dict(device.get("camera") or {})
+        if camera_front is not None:
+            camera["front"] = validate_camera_mode(camera_front, CAMERA_DEFAULT_FRONT, "front camera")
+        if camera_back is not None:
+            camera["back"] = validate_camera_mode(camera_back, CAMERA_DEFAULT_BACK, "back camera")
+        camera.setdefault("front", CAMERA_DEFAULT_FRONT)
+        camera.setdefault("back", CAMERA_DEFAULT_BACK)
+
+        device["camera"] = camera
+        updated_config = self._write_camera_config(
+            config.AVD_HOME / f"{device['avd_name']}.avd" / "config.ini",
+            camera["front"], camera["back"],
+        )
+        self._save_device(device)
+        return {
+            "device": name,
+            "camera": camera,
+            "config_updated": updated_config,
+            "needs_restart": self._is_running(name),
+        }
+
     def _create_avd_config_manually(self, device, android_info):
         """Create AVD config files manually when avdmanager is unavailable.
 
@@ -309,8 +412,8 @@ hw.keyboard=yes
 hw.lcd.width=1080
 hw.lcd.height=2400
 hw.lcd.density=420
-hw.camera.back=virtualscene
-hw.camera.front=emulated
+hw.camera.back={device.get("camera", {}).get("back", CAMERA_DEFAULT_BACK)}
+hw.camera.front={device.get("camera", {}).get("front", CAMERA_DEFAULT_FRONT)}
 hw.sensors.orientation=yes
 hw.sensors.acceleration=yes
 hw.battery=yes
@@ -452,6 +555,13 @@ tag.id=google_apis_playstore
                 cmd.extend(["-prop", f"{key}={value}"])
         except Exception as exc:  # never block launch on prop generation
             print(f"[DeviceManager] Warning: could not build -prop flags: {exc}")
+
+        # Camera sources (webcam passthrough, virtual scene, ...). The flags
+        # win over config.ini, so changes take effect on the next launch.
+        camera = device.get("camera") or {}
+        front = camera.get("front") or CAMERA_DEFAULT_FRONT
+        back = camera.get("back") or CAMERA_DEFAULT_BACK
+        cmd.extend(["-camera-front", str(front), "-camera-back", str(back)])
 
         if device.get("proxy"):
             proxy = device["proxy"].strip()
@@ -829,6 +939,13 @@ tag.id=google_apis_playstore
              "set EMULATOR_GPU_MODE=swiftshader_indirect."),
             ("another emulator instance",
              "another emulator already uses this port — stop it or relaunch."),
+            ("webcam",
+             "the emulator could not open the selected webcam - pick a different "
+             "camera (webcam1, ...) or use 'emulated'/'virtualscene' in the device "
+             "camera settings."),
+            ("camera",
+             "a camera source failed to initialise - check the camera mode "
+             "(webcam0 needs a webcam connected to this machine)."),
             ("snapshot",
              "the quickboot snapshot is unusable — the device was started with "
              "-no-snapshot already, so try a wipe: `python main.py launch <name> --wipe`."),

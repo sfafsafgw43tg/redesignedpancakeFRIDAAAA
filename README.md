@@ -35,6 +35,7 @@ Every device gets a full, internally-consistent identity:
 
 ### 🌐 Anonymity
 - `ProxyManager` supports HTTP and SOCKS5 proxies, wired into the emulator via `-http-proxy`.
+- **Host webcam passthrough**: each device can use a real webcam (`webcam0`, `webcam1`, …) for the front camera, the back camera, or both. Configured per device, written to the AVD `config.ini` and enforced with `emulator -camera-front/‑back` at launch.
 
 ---
 
@@ -127,6 +128,9 @@ python main.py setup -a 14                                      # install/repair
 python main.py models                                           # list 50+ phone models
 python main.py create -m "Samsung Galaxy S24" -a 14             # create device
 python main.py create -m "Samsung Galaxy S24" -a 14 -p socks5://127.0.0.1:1080
+python main.py create -m "Samsung Galaxy S24" --camera-both webcam0   # real webcam on both cameras
+python main.py create -m "Samsung Galaxy S24" --camera-back webcam0 --camera-front emulated
+python main.py set-camera <name> --both webcam0                       # change an existing device
 python main.py list                                             # list saved devices
 python main.py launch <name> --frida                            # launch + runtime hooks
 python main.py launch <name> --no-wait --boot-timeout 300       # don't block on boot
@@ -141,6 +145,22 @@ python apply_antidetect.py -m "Samsung Galaxy S24 Ultra"
 python apply_antidetect.py --device <name>                      # reuse saved identity
 python update_devices.py                                        # re-apply props to AVDs
 ```
+
+### 📷 Cameras (including your real webcam)
+When creating a device (GUI **New Device** dialog or `create` command) you can choose a source for the **back** and **front** camera:
+
+| Value | Meaning |
+|-------|---------|
+| `virtualscene` | 3D virtual room (default back camera) |
+| `emulated` | Synthetic camera (default front camera) |
+| `webcam0`, `webcam1`, … | A real webcam on the **host** machine (`webcam0` is usually the built-in/default one) |
+| `none` | No camera |
+
+The GUI has a **“Use webcam0 for both”** shortcut, and the device details dialog can change the cameras later (restart the device to apply). The choice is saved in `data/devices/<name>.json`, written to `hw.camera.front`/`hw.camera.back` in the AVD `config.ini`, and also passed at launch as `-camera-front`/`-camera-back` so it always wins.
+
+Notes:
+- If a webcam can't be opened (wrong index, camera in use by another app, or no webcam at all) the emulator exits; the launch error now names the camera as the likely cause. Try `webcam1`, or close the app that is using the camera.
+- Webcam passthrough requires the emulator to run with a GUI (not `-no-window`), which is the default here.
 
 ### Dashboard: desktop app or browser
 `python main.py gui` opens the dashboard in its **own desktop window** when `pywebview` is installed (falling back to a browser otherwise).
@@ -228,5 +248,6 @@ python tests/cli_gui_smoke_test.py         # CLI + GUI endpoints incl. async lau
 python tests/settings_desktop_test.py      # SDK selection/persistence, settings API, desktop mode
 python tests/console_spoof_test.py         # sensor/battery console auth + syntax
 python tests/frida_serial_test.py          # serial binding, Frida status/install, spoofing API
+python tests/camera_test.py               # webcam0 selection, launch flags, editing, validation
 ```
 Both build a stub SDK (`tests/fake_sdk.py`) with fake `emulator`/`adb`/`avdmanager`, so the real launch code path is exercised without downloading anything.

@@ -173,7 +173,13 @@ def list_devices():
 @click.option("--android", "-a", default="14", help="Android version (9-15)")
 @click.option("--name", "-n", help="Device name (auto-generated if not specified)")
 @click.option("--proxy", "-p", help="Proxy address (e.g., socks5://127.0.0.1:1080)")
-def create(model, android, name, proxy):
+@click.option("--camera-front", default=None,
+              help="Front camera source: emulated (default), virtualscene, webcam0, none")
+@click.option("--camera-back", default=None,
+              help="Back camera source: virtualscene (default), emulated, webcam0, none")
+@click.option("--camera-both", default=None,
+              help="Use the same camera source for front and back (e.g. webcam0)")
+def create(model, android, name, proxy, camera_front, camera_back, camera_both):
     """Create a new emulator device"""
     import config
     from core.device_manager import DeviceManager
@@ -186,17 +192,24 @@ def create(model, android, name, proxy):
     manager = DeviceManager()
 
     try:
+        if camera_both:
+            camera_front = camera_front or camera_both
+            camera_back = camera_back or camera_both
         device = manager.create_device(
             model=model,
             android_version=str(android),
             name=name,
-            proxy=proxy
+            proxy=proxy,
+            camera_front=camera_front,
+            camera_back=camera_back,
         )
         print(f"{Fore.GREEN}✓ Device created: {device['name']}{Style.RESET_ALL}")
         print(f"  Model: {device['model']}")
         print(f"  Android: {device['android_version']}")
         if proxy:
             print(f"  Proxy: {proxy}")
+        camera = device.get("camera", {})
+        print(f"  Cameras: front={camera.get('front')} back={camera.get('back')}")
         print(f"\n{Fore.CYAN}Launch it with:{Style.RESET_ALL} python main.py launch {device['name']}")
     except Exception as e:
         print(f"{Fore.RED}✗ Error: {e}{Style.RESET_ALL}")
@@ -282,6 +295,39 @@ def delete(name, yes):
     except Exception as e:
         print(f"{Fore.RED}✗ Error: {e}{Style.RESET_ALL}")
         raise SystemExit(1)
+
+
+@cli.command("set-camera")
+@click.argument("name")
+@click.option("--front", "camera_front", default=None,
+              help="Front camera source (emulated, virtualscene, webcam0, none)")
+@click.option("--back", "camera_back", default=None,
+              help="Back camera source (virtualscene, emulated, webcam0, none)")
+@click.option("--both", "camera_both", default=None,
+              help="Use the same source for both cameras (e.g. webcam0)")
+def set_camera(name, camera_front, camera_back, camera_both):
+    """Change the cameras of an existing device"""
+    from core.device_manager import DeviceManager
+
+    if not any((camera_front, camera_back, camera_both)):
+        print(f"{Fore.RED}✗ Specify --front/--back/--both (e.g. --both webcam0){Style.RESET_ALL}")
+        raise SystemExit(2)
+
+    if camera_both:
+        camera_front = camera_front or camera_both
+        camera_back = camera_back or camera_both
+
+    manager = DeviceManager()
+    try:
+        result = manager.set_device_cameras(name, camera_front=camera_front, camera_back=camera_back)
+    except Exception as exc:
+        print(f"{Fore.RED}✗ Error: {exc}{Style.RESET_ALL}")
+        raise SystemExit(1)
+
+    camera = result["camera"]
+    print(f"{Fore.GREEN}✓ {name}: front={camera['front']} back={camera['back']}{Style.RESET_ALL}")
+    if result["needs_restart"]:
+        print(f"{Fore.YELLOW}  The device is running - restart it to apply the new cameras.{Style.RESET_ALL}")
 
 
 @cli.command()

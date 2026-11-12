@@ -290,11 +290,19 @@ function populateModelSelect() {
     }
 }
 
+function useWebcamForBoth() {
+    document.getElementById('cameraFront').value = 'webcam0';
+    document.getElementById('cameraBack').value = 'webcam0';
+    showToast('Both cameras set to webcam0', 'info');
+}
+
 async function createDevice() {
     const name = document.getElementById('deviceName').value.trim();
     const model = document.getElementById('phoneModel').value;
     const android = document.getElementById('androidVersion').value;
     const proxy = document.getElementById('proxyAddress').value.trim();
+    const cameraFront = document.getElementById('cameraFront').value.trim();
+    const cameraBack = document.getElementById('cameraBack').value.trim();
 
     if (!model) {
         showToast('Please select a phone model', 'error');
@@ -309,7 +317,9 @@ async function createDevice() {
                 name: name || undefined,
                 model: model,
                 android_version: android,
-                proxy: proxy || undefined
+                proxy: proxy || undefined,
+                camera_front: cameraFront || undefined,
+                camera_back: cameraBack || undefined
             })
         });
 
@@ -323,6 +333,8 @@ async function createDevice() {
             // Clear form
             document.getElementById('deviceName').value = '';
             document.getElementById('proxyAddress').value = '';
+            document.getElementById('cameraFront').value = 'emulated';
+            document.getElementById('cameraBack').value = 'virtualscene';
         } else {
             showToast(data.error || 'Failed to create device', 'error');
         }
@@ -470,6 +482,29 @@ async function showDeviceDetails(name) {
                     <div class="details-value">${identity.operator || 'N/A'}</div>
                 </div>
             </div>
+            <h5 style="margin: 1rem 0 0.75rem; color: var(--text-secondary);">Cameras</h5>
+            <div class="camera-grid">
+                <div>
+                    <small class="hint">Back camera</small>
+                    <input type="text" id="detailsCameraBack" list="cameraOptions"
+                        value="${(device.camera && device.camera.back) || 'virtualscene'}">
+                </div>
+                <div>
+                    <small class="hint">Front camera</small>
+                    <input type="text" id="detailsCameraFront" list="cameraOptions"
+                        value="${(device.camera && device.camera.front) || 'emulated'}">
+                </div>
+            </div>
+            <div style="margin-top: 0.6rem; display: flex; gap: 0.5rem;">
+                <button class="btn btn-small btn-secondary" onclick="useWebcamForBothDetails()">
+                    Use webcam0 for both
+                </button>
+                <button class="btn btn-small btn-primary" onclick="saveCameras('${device.name}')">
+                    Save cameras
+                </button>
+            </div>
+            <small class="hint">webcam0 passes your real webcam through to the emulator.
+                ${device.running ? 'Restart the device to apply changes.' : ''}</small>
             ${device.proxy ? `
                 <h5 style="margin: 1rem 0 0.75rem; color: var(--text-secondary);">Network</h5>
                 <div class="details-grid">
@@ -484,6 +519,35 @@ async function showDeviceDetails(name) {
         modal.classList.add('active');
     } catch (error) {
         showToast('Failed to load device details', 'error');
+    }
+}
+
+function useWebcamForBothDetails() {
+    document.getElementById('detailsCameraFront').value = 'webcam0';
+    document.getElementById('detailsCameraBack').value = 'webcam0';
+}
+
+async function saveCameras(name) {
+    const front = document.getElementById('detailsCameraFront').value.trim();
+    const back = document.getElementById('detailsCameraBack').value.trim();
+
+    try {
+        const response = await fetch(`/api/devices/${name}/camera`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ front, back })
+        });
+        const data = await response.json();
+
+        if (data.success) {
+            const restart = data.needs_restart ? ' Restart the device to apply.' : '';
+            showToast(`Cameras saved: front=${data.camera.front}, back=${data.camera.back}.${restart}`, 'success');
+            await loadDevices();
+        } else {
+            showToast(data.error || 'Invalid camera settings', 'error');
+        }
+    } catch (error) {
+        showToast('Failed to save cameras', 'error');
     }
 }
 
