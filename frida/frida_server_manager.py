@@ -342,6 +342,13 @@ class FridaServerManager:
     def install(self, local_file=None):
         """Download (or copy) + push + start. Returns ``(ok, message)``."""
         self.last_error = None
+        # Fail fast: don't spend time downloading for a device that isn't there.
+        if not self.serial:
+            self._fail(
+                "No device connected. Start an emulator (Launch in the dashboard), "
+                f"then retry. adb says: {adb.describe_devices()}."
+            )
+            return False, self.last_error
         if local_file:
             if not self.install_from_file(local_file):
                 return False, self.last_error
