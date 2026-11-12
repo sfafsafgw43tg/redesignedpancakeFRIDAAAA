@@ -64,7 +64,7 @@ Generated device identities are saved as JSON under `data/devices/` (gitignored)
 
 ### Prerequisites
 - **Python 3.8+**
-- **Android SDK** with `emulator`, `adb`, `avdmanager`, `sdkmanager` — plus at least one system image (e.g. `system-images;android-34;google_apis_playstore;x86_64`).
+- **Android SDK** with `emulator`, `adb`, `avdmanager`, `sdkmanager` — plus at least one system image, by default `system-images;android-34;google_apis;x86_64` (userdebug, root capable). Play Store images are also supported but cannot run frida-server.
 
   The SDK is auto-detected from `ANDROID_SDK_ROOT`, then `ANDROID_HOME` / `ANDROID_SDK_HOME`, then the OS default location, then `PATH`. No editing required:
   ```bash
@@ -75,8 +75,8 @@ Generated device identities are saved as JSON under `data/devices/` (gitignored)
   ```
   `python main.py check_sdk` prints exactly what was found and exits non-zero if something is missing.
 - **Hardware acceleration** — VT-x/AMD-V enabled in BIOS plus KVM (Linux), WHPX/HAXM (Windows), or the Hypervisor.framework (macOS). Without it, x86_64 images cannot boot; the launcher detects this with `emulator -accel-check` and warns.
-- **Root** on the emulator for `service call` IMEI spoofing and protected `ro.*` props. On user-build emulator images `su` does not exist, so the tool uses `adb root` and treats failures as non-fatal (Frida hooks cover the Java API).
-- **Frida server** on the device — `FridaServerManager` auto-downloads `frida-server-16.1.4` for the device's real ABI (`x86_64`, `arm64`, …), retries the download, pushes it to `/data/local/tmp/`, and starts it.
+- **Root** on the emulator for `service call` IMEI spoofing and protected `ro.*` props. `adb root` only works on **userdebug** images — that is why the default image is `google_apis` and **not** `google_apis_playstore`. The tool still falls back gracefully (`su -c` → plain shell) and treats failures as non-fatal.
+- **Frida server** on the device — `FridaServerManager` resolves the version of the installed `frida` Python client (so client and server always match), downloads `frida-server-<version>` for the device's real ABI (`x86_64`, `arm64`, …), validates that the file really is an ELF binary for that ABI, pushes it to `/data/local/tmp/`, verifies the size on the device, and starts it with `adb root` (or `su`/plain shell on user builds).
 
 ### ⚡ One-click start (Windows)
 Double-click **`START.bat`**. It will:
@@ -126,7 +126,8 @@ python main.py check_sdk                                        # verify SDK/ADB
 python main.py set-sdk --pick                                   # choose the SDK folder
 python main.py setup -a 14                                      # install/repair SDK components
 python main.py models                                           # list 50+ phone models
-python main.py create -m "Samsung Galaxy S24" -a 14             # create device
+python main.py create -m "Samsung Galaxy S24" -a 14             # create device (rootable image)
+python main.py create -m "Samsung Galaxy S24" -a 14 -i google_apis_playstore  # Play Store (no root)
 python main.py create -m "Samsung Galaxy S24" -a 14 -p socks5://127.0.0.1:1080
 python main.py create -m "Samsung Galaxy S24" --camera-both webcam0   # real webcam on both cameras
 python main.py create -m "Samsung Galaxy S24" --camera-back webcam0 --camera-front emulated
@@ -162,6 +163,16 @@ Notes:
 - If a webcam can't be opened (wrong index, camera in use by another app, or no webcam at all) the emulator exits; the launch error now names the camera as the likely cause. Try `webcam1`, or close the app that is using the camera.
 - Webcam passthrough requires the emulator to run with a GUI (not `-no-window`), which is the default here.
 
+### 🧱 System image: root vs Play Store
+Every device records the exact system image it was created with, and the dashboard shows a **✓ Root** / **⚠ No root** tag.
+
+| `-i` / GUI value | Package | `adb root` | Frida & prop spoofing |
+|---|---|---|---|
+| `google_apis` (default) | `system-images;android-<api>;google_apis;x86_64` | ✅ works | ✅ works |
+| `google_apis_playstore` | `system-images;android-<api>;google_apis_playstore;x86_64` | ❌ `adbd cannot run as root in production builds` | ❌ frida-server cannot run, `setprop` on protected props is refused |
+
+Play Store images are user builds: the bootloader is locked, `su` is absent and `adb root` is rejected. If you pick one (CLI or **New Device** dialog) you get an explicit warning instead of a silent failure — apps can still be installed, but use `google_apis` when you need Frida. Devices store `image`, `image_variant` and `rootable` in `data/devices/<name>.json`; recreate the device with `-i google_apis` to switch (the image is baked into the AVD).
+
 ### Dashboard: desktop app or browser
 `python main.py gui` opens the dashboard in its **own desktop window** when `pywebview` is installed (falling back to a browser otherwise).
 
@@ -185,12 +196,13 @@ Launching from the GUI is **asynchronous**: `POST /api/devices/<name>/launch` re
 ### 🧩 Frida says "not installed" / installation fails
 The Frida card and the spoofing buttons always target the emulator that is **actually running**. The serial is resolved from the device's saved launch serial, or by matching the running emulator's AVD name (`adb -s <serial> emu avd name`) - so a second emulator on port 5556, or one started in Android Studio, is no longer mistaken for `emulator-5554`. A resolved serial is written back to `data/devices/<name>.json`.
 
-If installing fails, the toast now shows the real reason (no device, `adb push` error, GitHub blocked, server didn't start). Fixes, in order:
+**Most common cause:** the device was created with a Play Store image. Those are user builds, so `adb root` is refused and `frida-server` cannot be started — the tool now warns about this at creation time and the status card shows the reason. Create the device with the **Google APIs (root)** image. Other causes are reported verbatim (no device, `adb push` failed, GitHub blocked, binary is an HTML page, wrong ABI, server exited):
 
-1. Start the emulator and wait for the home screen, then press **Download & Install** again.
-2. **From file…** - download `frida-server-16.1.4-android-<abi>.xz` from the [Frida releases](https://github.com/frida/frida/releases) in a browser and pick it; the `.xz`/`.zip` archive is decompressed automatically.
-3. Manual: copy the extracted binary to `data/frida-server`, then press **Install** (it will be pushed and started with `adb root`).
+1. Start the emulator and wait for the home screen, then press **Download & Install** again. The status card also shows a full `diagnose()` dump: `adb` path, device state, ABI, build type, image rootable, client/server versions.
+2. **From file…** - download `frida-server-<version>-android-<abi>.xz` from the [Frida releases](https://github.com/frida/frida/releases) in a browser and pick it; the `.xz`/`.zip` archive is decompressed and validated automatically (ELF magic, ABI, size).
+3. Manual: copy the extracted binary to `data/frida-server`, then press **Install** (it is re-validated, pushed, size-checked and started).
 4. Check the device side with `adb shell /data/local/tmp/frida-server` (or `adb shell cat /data/local/tmp/frida.log`).
+5. Client/server versions must match: the manager downloads the same version as your installed `frida` client (fallback `16.1.4` when the client is missing).
 
 API: `GET /api/status/frida?serial=…` (auto-detects when omitted), `POST /api/frida/install` (`{"serial": …, "local_path": …}`), `GET /api/frida/install/status`, `POST /api/frida/pick-server`.
 
@@ -249,5 +261,6 @@ python tests/settings_desktop_test.py      # SDK selection/persistence, settings
 python tests/console_spoof_test.py         # sensor/battery console auth + syntax
 python tests/frida_serial_test.py          # serial binding, Frida status/install, spoofing API
 python tests/camera_test.py               # webcam0 selection, launch flags, editing, validation
+python tests/integration_launch_test.py    # create/launch/stop, image variants, rootable flags
 ```
 Both build a stub SDK (`tests/fake_sdk.py`) with fake `emulator`/`adb`/`avdmanager`, so the real launch code path is exercised without downloading anything.

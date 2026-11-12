@@ -296,6 +296,19 @@ function useWebcamForBoth() {
     showToast('Both cameras set to webcam0', 'info');
 }
 
+function updateImageVariantHint() {
+    const select = document.getElementById('imageVariant');
+    const hint = document.getElementById('imageVariantHint');
+    if (!select || !hint) return;
+    if (select.value === 'google_apis_playstore') {
+        hint.innerHTML = '<strong>⚠ No root:</strong> frida-server and property spoofing ' +
+            'will <em>not</em> work on this device. Pick "Google APIs" if you need Frida.';
+    } else {
+        hint.innerHTML = 'Frida and property spoofing need <code>adb root</code>, which only ' +
+            'the Google APIs (userdebug) image allows.';
+    }
+}
+
 async function createDevice() {
     const name = document.getElementById('deviceName').value.trim();
     const model = document.getElementById('phoneModel').value;
@@ -303,6 +316,8 @@ async function createDevice() {
     const proxy = document.getElementById('proxyAddress').value.trim();
     const cameraFront = document.getElementById('cameraFront').value.trim();
     const cameraBack = document.getElementById('cameraBack').value.trim();
+    const imageVariantEl = document.getElementById('imageVariant');
+    const imageVariant = imageVariantEl ? imageVariantEl.value : undefined;
 
     if (!model) {
         showToast('Please select a phone model', 'error');
@@ -319,7 +334,8 @@ async function createDevice() {
                 android_version: android,
                 proxy: proxy || undefined,
                 camera_front: cameraFront || undefined,
-                camera_back: cameraBack || undefined
+                camera_back: cameraBack || undefined,
+                image_variant: imageVariant || undefined
             })
         });
 
@@ -327,6 +343,9 @@ async function createDevice() {
 
         if (data.success) {
             showToast('Device created successfully!', 'success');
+            if (data.warning) {
+                showToast(data.warning, 'error');
+            }
             hideCreateDialog();
             loadDevices();
 
@@ -454,6 +473,12 @@ async function showDeviceDetails(name) {
             <div class="device-details-header">
                 <h4>${device.model}</h4>
                 <p>Android ${device.android_version} • ${device.brand}</p>
+                <p style="font-size: 0.8rem; color: var(--text-secondary);">
+                    Image: <code>${device.image || 'n/a'}</code>
+                    ${device.rootable === false
+                        ? ' — Play Store image: no adb root, so frida-server cannot run.'
+                        : ''}
+                </p>
             </div>
             <h5 style="margin: 1rem 0 0.75rem; color: var(--text-secondary);">Device Identity</h5>
             <div class="details-grid">
@@ -582,6 +607,9 @@ function renderDevices() {
                 <span class="device-tag">Android ${device.android_version}</span>
                 <span class="device-tag">${device.brand}</span>
                 ${device.proxy ? '<span class="device-tag">🔒 Proxy</span>' : ''}
+                ${device.rootable === false
+                    ? '<span class="device-tag tag-warn" title="Play Store image: adb root unavailable, Frida will not work">⚠ No root</span>'
+                    : '<span class="device-tag tag-ok" title="Google APIs image: adb root available">✓ Root</span>'}
             </div>
             <div class="device-actions">
                 ${device.running ? `

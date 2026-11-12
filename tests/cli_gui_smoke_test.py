@@ -56,6 +56,15 @@ r = cli("create", "-m", "Samsung Galaxy S24", "-a", "14", "-n", "clidev")
 check("create exits 0", r.returncode == 0, r.stdout + r.stderr)
 check("create prints device name", "clidev" in r.stdout, r.stdout)
 
+r = cli("create", "-m", "Samsung Galaxy S24", "-a", "14", "-n", "clidev_ps", "-i",
+        "google_apis_playstore")
+check("create with --image playstore exits 0", r.returncode == 0, r.stdout + r.stderr)
+check("create warns about no root on playstore", "Play Store" in r.stdout
+      and "frida-server" in r.stdout, r.stdout)
+
+r = cli("create", "-m", "Samsung Galaxy S24", "-a", "14", "-n", "clidev_bad", "-i", "bogus")
+check("bad --image rejected", r.returncode != 0, r.stdout + r.stderr)
+
 r = cli("create", "-m", "Samsung Galaxy S24", "-a", "42", "-n", "badver")
 check("unsupported android rejected", r.returncode != 0 and "Unsupported" in (r.stdout + r.stderr))
 
@@ -94,6 +103,19 @@ r = client.post("/api/devices", json={
 })
 created = r.get_json()
 check("api create device", r.status_code == 200 and created.get("success"), json.dumps(created)[:300])
+check("api device defaults to rootable google_apis image",
+      created.get("device", {}).get("image_variant") == "google_apis"
+      and created["device"].get("rootable") is True, json.dumps(created)[:300])
+
+r = client.post("/api/devices", json={
+    "model": "Google Pixel 8", "android_version": "14", "name": "guidev_ps",
+    "image_variant": "google_apis_playstore",
+})
+play = r.get_json()
+check("api accepts image_variant", r.status_code == 200
+      and play.get("device", {}).get("image_variant") == "google_apis_playstore",
+      json.dumps(play)[:300])
+check("api warns when playstore chosen (no root)", bool(play.get("warning")), json.dumps(play)[:300])
 
 r = client.post("/api/devices/guidev/launch", json={"frida": False})
 check("api launch returns immediately", r.status_code == 200 and r.get_json().get("success"),

@@ -757,3 +757,13 @@ body {
         grid-template-columns: 1fr;
     }
 }
+
+.device-tag.tag-ok {
+    background: rgba(34, 197, 94, 0.15);
+    color: #22c55e;
+}
+
+.device-tag.tag-warn {
+    background: rgba(245, 158, 11, 0.18);
+    color: #f59e0b;
+}

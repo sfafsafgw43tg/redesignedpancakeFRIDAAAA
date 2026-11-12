@@ -146,6 +146,31 @@ class DeviceManager:
         device["running"] = self._is_running(name)
         return device
 
+    def _detect_avd_image(self, avd_name):
+        """Read the system image package an existing AVD was created with.
+
+        Devices created before image variants were recorded have no ``image``
+        key in their JSON. The AVD's ``config.ini`` still knows the truth, so
+        use that instead of assuming the current default image.
+        """
+        if not avd_name:
+            return None
+        ini = config.AVD_HOME / f"{avd_name}.avd" / "config.ini"
+        try:
+            lines = ini.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return None
+        for line in lines:
+            key, _, value = line.partition("=")
+            if key.strip() == "image.sysdir.1" and value.strip():
+                rel = value.strip().strip("/\\")
+                if rel.startswith("system-images;") and rel.count(";") >= 3:
+                    return rel  # already a package name
+                parts = [p for p in rel.replace("\\", "/").split("/") if p]
+                if parts and parts[0] == "system-images" and len(parts) >= 4:
+                    return ";".join(parts)
+        return None
+
     def _save_device(self, device):
         device_file = self.devices_dir / f"{device['name']}.json"
         # Don't persist transient runtime keys
@@ -157,12 +182,16 @@ class DeviceManager:
     # Creation
     # ------------------------------------------------------------------
     def create_device(self, model, android_version="14", name=None, proxy=None,
-                      camera_front=None, camera_back=None):
+                      camera_front=None, camera_back=None, image_variant=None):
         """Create a new device with anti-detection profile.
 
         ``camera_front``/``camera_back`` accept the emulator camera sources:
         ``emulated``, ``virtualscene``, ``webcam0``/``webcam1``/..., ``none``.
         Use ``webcam0`` to pass the host webcam through to the emulator.
+
+        ``image_variant`` selects the system image: ``google_apis`` (default,
+        userdebug - supports ``adb root`` so Frida and property spoofing work)
+        or ``google_apis_playstore`` (Play Store, no root).
         """
         model_profile = get_model_profile(model)
         if not model_profile:
@@ -183,7 +212,18 @@ class DeviceManager:
                 f"Supported: {', '.join(sorted(config.ANDROID_VERSIONS))}"
             )
 
-        android_info = config.ANDROID_VERSIONS[android_version]
+        android_info = dict(config.ANDROID_VERSIONS[android_version])
+        variant = image_variant or config.DEFAULT_IMAGE_VARIANT
+        try:
+            image = config.image_package(android_version, variant)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from None
+        android_info = {
+            **android_info,
+            "image": image,
+            "image_variant": variant,
+            "rootable": config.image_is_rootable(image),
+        }
 
         front = validate_camera_mode(camera_front, CAMERA_DEFAULT_FRONT, "front camera")
         back = validate_camera_mode(camera_back, CAMERA_DEFAULT_BACK, "back camera")
@@ -195,6 +235,9 @@ class DeviceManager:
             "android_version": android_version,
             "api_level": android_info["api"],
             "codename": android_info["codename"],
+            "image": android_info["image"],
+            "image_variant": android_info["image_variant"],
+            "rootable": android_info["rootable"],
             "proxy": proxy,
             "identity": identity,
             "camera": {"front": front, "back": back},
@@ -233,15 +276,16 @@ class DeviceManager:
             return
 
         # Ensure the system image is installed; install it if missing.
-        if not config.is_system_image_installed(android_info):
-            self._install_system_image(android_info)
+        image = device.get("image") or android_info["image"]
+        if not config.is_system_image_installed(image):
+            self._install_system_image({**android_info, "image": image})
 
         device_profile = self._pick_device_profile()
         cmd = [
             config.AVDMANAGER_PATH,
             "create", "avd",
             "--name", avd_name,
-            "--package", android_info["image"],
+            "--package", device.get("image") or android_info["image"],
             "--device", device_profile,
             "--force",
         ]
@@ -393,7 +437,11 @@ class DeviceManager:
         avd_path.mkdir(parents=True, exist_ok=True)
 
         identity = device["identity"]
-        image_path = android_info["image"].replace(";", "/")
+        image_package = device.get("image") or android_info["image"]
+        image_path = image_package.replace(";", "/")
+        is_playstore = "playstore" in image_package
+        tag_display = "Google Play" if is_playstore else "Google APIs"
+        tag_id = "google_apis_playstore" if is_playstore else "google_apis"
         safe_model = "".join(
             c if c.isalnum() or c in "-_" else "_" for c in identity.get("model", "generic")
         )
@@ -427,8 +475,8 @@ image.sysdir.1={image_path}
 kernel.newDeviceNaming=yes
 kernel.supportsGPUDirectAccess=yes
 showDeviceFrame=no
-tag.display=Google Play
-tag.id=google_apis_playstore
+tag.display={tag_display}
+tag.id={tag_id}
 """
         with open(avd_path / "config.ini", "w", encoding="utf-8") as f:
             f.write(config_content)
@@ -492,10 +540,26 @@ tag.id=google_apis_playstore
             )
 
         android_info = config.ANDROID_VERSIONS.get(device.get("android_version", "14"))
-        if android_info and not config.is_system_image_installed(android_info):
+        image = device.get("image") or self._detect_avd_image(device.get("avd_name")) \
+            or (android_info or {}).get("image")
+        if image and not device.get("image"):
+            # Legacy device: remember what it actually runs so the dashboard can
+            # show the right root/no-root tag.
+            device["image"] = image
+            device["image_variant"] = "google_apis_playstore" if "playstore" in image else "google_apis"
+            device["rootable"] = config.image_is_rootable(image)
+            self._save_device(device)
+        if image and not config.is_system_image_installed(image):
             raise EmulatorLaunchError(
-                f"System image {android_info['image']} is not installed.\n"
-                f"Install it with: sdkmanager --install \"{android_info['image']}\""
+                f"System image {image} is not installed.\n"
+                f"Install it with: sdkmanager --install \"{image}\""
+            )
+        if image and not config.image_is_rootable(image):
+            print(
+                "[DeviceManager] Note: this device uses a Play Store image, which "
+                "refuses `adb root`. Frida injection and protected property spoofing "
+                "need a rootable image: create the device with "
+                "--image google_apis (or pick 'Google APIs' in the dashboard)."
             )
 
         # --- Allocate a free console port ---------------------------------

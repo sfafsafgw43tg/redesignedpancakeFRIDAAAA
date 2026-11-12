@@ -179,7 +179,11 @@ def list_devices():
               help="Back camera source: virtualscene (default), emulated, webcam0, none")
 @click.option("--camera-both", default=None,
               help="Use the same camera source for front and back (e.g. webcam0)")
-def create(model, android, name, proxy, camera_front, camera_back, camera_both):
+@click.option("--image", "-i", "image_variant", default=None,
+              type=click.Choice(["google_apis", "google_apis_playstore"]),
+              help="System image: google_apis (default, rootable - Frida/spoofing work) "
+                   "or google_apis_playstore (Play Store, no root)")
+def create(model, android, name, proxy, camera_front, camera_back, camera_both, image_variant):
     """Create a new emulator device"""
     import config
     from core.device_manager import DeviceManager
@@ -202,8 +206,13 @@ def create(model, android, name, proxy, camera_front, camera_back, camera_both):
             proxy=proxy,
             camera_front=camera_front,
             camera_back=camera_back,
+            image_variant=image_variant,
         )
         print(f"{Fore.GREEN}✓ Device created: {device['name']}{Style.RESET_ALL}")
+        if device.get("rootable") is False:
+            print(f"{Fore.YELLOW}⚠ Play Store image selected: adb root is not available, so "
+                  f"frida-server and property spoofing will not work on this device. "
+                  f"Re-create with --image google_apis.{Style.RESET_ALL}")
         print(f"  Model: {device['model']}")
         print(f"  Android: {device['android_version']}")
         if proxy:

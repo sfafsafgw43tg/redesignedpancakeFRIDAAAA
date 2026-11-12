@@ -84,8 +84,16 @@ def create_app():
                 proxy=data.get("proxy"),
                 camera_front=data.get("camera_front"),
                 camera_back=data.get("camera_back"),
+                image_variant=data.get("image_variant"),
             )
-            return jsonify({"success": True, "device": device})
+            response = {"success": True, "device": device}
+            if device.get("rootable") is False:
+                response["warning"] = (
+                    "Play Store images do not allow 'adb root', so frida-server and "
+                    "property spoofing will not work on this device. Use the "
+                    "'Google APIs (root)' image for Frida."
+                )
+            return jsonify(response)
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 400
 
@@ -145,6 +153,7 @@ def create_app():
         data = request.get_json(silent=True) or {}
         android_version = str(data.get("android_version", "14"))
         sdk_path = (data.get("path") or "").strip() or None
+        image_variant = (data.get("image_variant") or "").strip() or None
 
         with _sdk_install_lock:
             if _sdk_install["running"]:
@@ -161,7 +170,8 @@ def create_app():
                 if sdk_path:
                     config.set_sdk_root(sdk_path)
                 setup_tool = SdkSetup(progress=progress)
-                info = setup_tool.full_setup(android_version=android_version)
+                info = setup_tool.full_setup(android_version=android_version,
+                                             image_variant=image_variant)
                 with _sdk_install_lock:
                     _sdk_install["ready"] = bool(info.get("ready"))
                     if not info.get("ready"):

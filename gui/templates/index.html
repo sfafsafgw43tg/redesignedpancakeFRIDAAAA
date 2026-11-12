@@ -141,6 +141,18 @@
                         </select>
                     </div>
                     <div class="form-group">
+                        <label>System Image</label>
+                        <select id="imageVariant" onchange="updateImageVariantHint()">
+                            <option value="google_apis">Google APIs (root capable - Frida &amp; spoofing work)</option>
+                            <option value="google_apis_playstore">Google Play Store (no root - Frida will not work)</option>
+                        </select>
+                        <small class="hint" id="imageVariantHint">
+                            Frida and property spoofing need <code>adb root</code>, which only the
+                            Google APIs (userdebug) image allows. Play Store images cannot run
+                            frida-server.
+                        </small>
+                    </div>
+                    <div class="form-group">
                         <label>Cameras</label>
                         <div class="camera-grid">
                             <div>

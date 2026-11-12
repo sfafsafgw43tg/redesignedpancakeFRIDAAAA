@@ -29,9 +29,10 @@ def setup_fake_sdk():
 
     for sub in ("emulator", "platform-tools", "cmdline-tools/latest/bin"):
         (sdk / sub).mkdir(parents=True, exist_ok=True)
-    image = sdk / "system-images/android-34/google_apis_playstore/x86_64"
-    image.mkdir(parents=True, exist_ok=True)
-    (image / "system.img").write_bytes(b"fake")
+    for variant in ("google_apis", "google_apis_playstore"):
+        image = sdk / f"system-images/android-34/{variant}/x86_64"
+        image.mkdir(parents=True, exist_ok=True)
+        (image / "system.img").write_bytes(b"fake")
     state.mkdir()
     log.write_text("")
 
@@ -60,14 +61,23 @@ def setup_fake_sdk():
 
     write_exe(sdk / "platform-tools" / "adb", """\
         echo "adb $@" >> "$FAKE_SDK_LOG"
+        state="$FAKE_SDK_STATE"
         case "$1" in
           devices)
             echo "List of devices attached"
-            for f in "$FAKE_SDK_STATE"/*.state; do
+            for f in "$state"/*.state; do
               [ -e "$f" ] || continue
               serial=$(basename "$f" .state)
               echo "$serial\t$(cat "$f")"
             done
+            ;;
+          root)
+            if [ -e "$state/root-allowed" ]; then
+              echo "restarting adbd as root"
+            else
+              echo "adbd cannot run as root in production builds"
+              exit 1
+            fi
             ;;
           -s)
             serial="$2"; shift 2
@@ -77,31 +87,63 @@ def setup_fake_sdk():
                 cmd="$*"
                 case "$cmd" in
                   *"getprop sys.boot_completed"*)
-                    cat "$FAKE_SDK_STATE/$serial.boot" 2>/dev/null || echo 0
+                    cat "$state/$serial.boot" 2>/dev/null || echo 0
                     ;;
                   *"getprop ro.product.cpu.abi"*)
                     echo "x86_64"
                     ;;
+                  *"getprop ro.build.type"*)
+                    if [ -e "$state/root-allowed" ]; then echo "userdebug"; else echo "user"; fi
+                    ;;
+                  *"getprop ro.debuggable"*)
+                    if [ -e "$state/root-allowed" ]; then echo "1"; else echo "0"; fi
+                    ;;
                   *"getprop"*)
                     echo ""
                     ;;
+                  "id"*)
+                    if [ -e "$state/root-allowed" ]; then echo "uid=0(root) gid=0(root)"; else echo "uid=2000(shell) gid=2000(shell)"; fi
+                    ;;
+                  *"--version"*)
+                    cat "$state/frida-version" 2>/dev/null || echo "16.1.4"
+                    ;;
                   *"ls /data/local/tmp/frida-server"*)
-                    if [ -e "$FAKE_SDK_STATE/frida-installed" ]; then
+                    if [ -e "$state/frida-installed" ]; then
                       echo "/data/local/tmp/frida-server"
                     else
                       echo "ls: /data/local/tmp/frida-server: No such file or directory"
                     fi
                     ;;
-                  chmod*)
-                    echo ""
-                    ;;
-                  ps*)
-                    if [ -e "$FAKE_SDK_STATE/frida-running" ]; then
+                  *"ps"*)
+                    if [ -e "$state/frida-running" ]; then
                       echo "root  4242  1  frida-server"
                     fi
                     ;;
-                  *nohup*frida-server*)
-                    [ -e "$FAKE_SDK_STATE/frida-installed" ] && touch "$FAKE_SDK_STATE/frida-running"
+                  *"rm -f"*)
+                    case "$cmd" in
+                      *"frida-server"*) rm -f "$state/frida-installed" "$state/frida-running" ;;
+                    esac
+                    ;;
+                  *"chmod"*)
+                    echo ""
+                    ;;
+                  *"stat -c"*|*"wc -c"*)
+                    cat "$state/frida-installed" 2>/dev/null || echo "0"
+                    ;;
+                  *"/proc/net/tcp"*)
+                    if [ -e "$state/frida-running" ]; then echo "0100007F:69A2"; fi
+                    ;;
+                  *"pkill"*)
+                    rm -f "$state/frida-running"
+                    ;;
+                  *"cat /data/local/tmp/frida.log"*)
+                    cat "$state/frida.log" 2>/dev/null || true
+                    ;;
+                  *"nohup"*|*"su -c"*)
+                    if [ -e "$state/frida-installed" ]; then
+                      touch "$state/frida-running"
+                      [ -e "$state/fail-start" ] && rm -f "$state/frida-running"
+                    fi
                     echo ""
                     ;;
                   *)
@@ -111,18 +153,24 @@ def setup_fake_sdk():
                 ;;
               emu)
                 if [ "$2" = "kill" ]; then
-                  rm -f "$FAKE_SDK_STATE/$serial.state" "$FAKE_SDK_STATE/$serial.boot" "$FAKE_SDK_STATE/$serial.avd"
+                  rm -f "$state/$serial.state" "$state/$serial.boot" "$state/$serial.avd"
                   echo "OK"
                 elif [ "$2" = "avd" ] && [ "$3" = "name" ]; then
-                  cat "$FAKE_SDK_STATE/$serial.avd" 2>/dev/null || echo "unknown"
+                  cat "$state/$serial.avd" 2>/dev/null || echo "unknown"
                   echo "OK"
                 else
                   echo "OK"
                 fi
                 ;;
-              root) echo "restarting adbd as root" ;;
               push)
-                touch "$FAKE_SDK_STATE/frida-installed"
+                local_file="$2"
+                size=$(wc -c < "$local_file" 2>/dev/null || echo 0)
+                if [ -e "$state/truncate-push" ]; then size=$((size / 2)); fi
+                if [ -e "$state/fail-push" ]; then
+                  echo "adb: error: failed to copy"
+                  exit 1
+                fi
+                echo "$size" > "$state/frida-installed"
                 echo "1 file pushed"
                 ;;
               *) echo "OK" ;;

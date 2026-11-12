@@ -14,6 +14,7 @@ and "Device emulator-5554 is not ready") and proves they are fixed:
 """
 import json
 import os
+import struct
 import sys
 import time
 from pathlib import Path
@@ -90,7 +91,14 @@ check("status reports not running", status.get("running") is False)
 # --------------------------------------------------------------- frida install
 print("== frida install (local file) ==")
 fake_server = TMP / "frida-server-16.1.4-android-x86_64"
-fake_server.write_bytes(b"\x7fELF" + os.urandom(300_000))
+def make_fake_server(path, machine=0x3E, size=1_200_000):
+    """Synthetic but structurally valid x86_64 ELF (frida-server stand-in)."""
+    header = b"\x7fELF" + b"\x02\x01\x01\x00" + b"\x00" * 10 + struct.pack("<H", machine)
+    header += b"\x00" * (64 - len(header))
+    path.write_bytes(header + os.urandom(size))
+
+
+make_fake_server(fake_server)
 
 response = client.post("/api/frida/install", json={"local_path": str(fake_server)})
 body = response.get_json()

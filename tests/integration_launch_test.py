@@ -22,8 +22,10 @@ SDK = TMP / "sdk"
 AVD_HOME = TMP / "avd"
 for sub in ("emulator", "platform-tools", "cmdline-tools/latest/bin"):
     (SDK / sub).mkdir(parents=True, exist_ok=True)
-(SDK / "system-images/android-34/google_apis_playstore/x86_64").mkdir(parents=True, exist_ok=True)
-(SDK / "system-images/android-34/google_apis_playstore/x86_64/system.img").write_bytes(b"fake")
+for _variant in ("google_apis", "google_apis_playstore"):
+    _img = SDK / f"system-images/android-34/{_variant}/x86_64"
+    _img.mkdir(parents=True, exist_ok=True)
+    (_img / "system.img").write_bytes(b"fake")
 
 
 def write_exe(path, body):
@@ -145,6 +147,26 @@ manager.devices_dir = config.SAVED_DEVICES_DIR
 device = manager.create_device("Samsung Galaxy S24", android_version="14", name="test_one")
 check("device created", device["name"] == "test_one")
 check("AVD ini created", (AVD_HOME / f"{device['avd_name']}.ini").exists())
+check("default image is google_apis (rootable)", device.get("image_variant") == "google_apis"
+      and device.get("image", "").endswith("google_apis;x86_64"), str(device.get("image")))
+check("default device marked rootable", device.get("rootable") is True)
+check("AVD config records the same image",
+      manager._detect_avd_image(device["avd_name"]) == device.get("image"),
+      str(manager._detect_avd_image(device["avd_name"])))
+# Legacy device JSON (no image keys): the image is recovered from config.ini.
+_legacy = json.loads((config.SAVED_DEVICES_DIR / "test_one.json").read_text())
+for _k in ("image", "image_variant", "rootable"):
+    _legacy.pop(_k, None)
+(config.SAVED_DEVICES_DIR / "test_legacy.json").write_text(json.dumps({**_legacy, "name": "test_legacy"}))
+check("legacy device image detected from AVD",
+      manager._detect_avd_image(_legacy["avd_name"]) == "system-images;android-34;google_apis;x86_64",
+      str(manager._detect_avd_image(_legacy["avd_name"])))
+(config.SAVED_DEVICES_DIR / "test_legacy.json").unlink()
+playstore = manager.create_device("Samsung Galaxy S24", android_version="14",
+                                  name="test_playstore", image_variant="google_apis_playstore")
+check("playstore variant stored", playstore.get("image_variant") == "google_apis_playstore")
+check("playstore device marked non-rootable", playstore.get("rootable") is False)
+manager.delete_device("test_playstore")
 
 # --- launch ----------------------------------------------------------------
 with open(log, "a") as fh:

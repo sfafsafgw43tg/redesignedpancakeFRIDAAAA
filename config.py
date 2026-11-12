@@ -291,15 +291,50 @@ EMULATOR_CONSOLE_AUTH_TOKEN = Path.home() / ".emulator_console_auth_token"
 GUI_HOST = "127.0.0.1"
 GUI_PORT = 8080
 
+# System image variants. `google_apis` (userdebug) supports `adb root`, which
+# Frida and the property spoofing need; Play Store images are user builds and
+# refuse root, so Frida/spoofing cannot work there.
+IMAGE_VARIANTS = {
+    "google_apis": {
+        "label": "Google APIs (root capable - needed for Frida/spoofing)",
+        "rootable": True,
+    },
+    "google_apis_playstore": {
+        "label": "Google Play Store (no root - Frida/spoofing limited)",
+        "rootable": False,
+    },
+}
+DEFAULT_IMAGE_VARIANT = "google_apis"
+
+
+def image_package(android_version, variant=None):
+    """sdkmanager package for an Android version + image variant."""
+    info = ANDROID_VERSIONS[str(android_version)]
+    variant = variant or DEFAULT_IMAGE_VARIANT
+    if variant not in IMAGE_VARIANTS:
+        raise ValueError(
+            f"Unknown image variant {variant!r}. Choose one of: "
+            f"{', '.join(IMAGE_VARIANTS)}"
+        )
+    return f"system-images;android-{info['api']};{variant};x86_64"
+
+
+def image_is_rootable(image_package_name):
+    """False for Play Store images (they refuse `adb root`)."""
+    if not image_package_name:
+        return True
+    return "playstore" not in str(image_package_name)
+
+
 # Android versions supported
 ANDROID_VERSIONS = {
-    "9": {"api": 28, "codename": "Pie", "image": "system-images;android-28;google_apis_playstore;x86_64"},
-    "10": {"api": 29, "codename": "Q", "image": "system-images;android-29;google_apis_playstore;x86_64"},
-    "11": {"api": 30, "codename": "R", "image": "system-images;android-30;google_apis_playstore;x86_64"},
-    "12": {"api": 31, "codename": "S", "image": "system-images;android-31;google_apis_playstore;x86_64"},
-    "13": {"api": 33, "codename": "Tiramisu", "image": "system-images;android-33;google_apis_playstore;x86_64"},
-    "14": {"api": 34, "codename": "UpsideDownCake", "image": "system-images;android-34;google_apis_playstore;x86_64"},
-    "15": {"api": 35, "codename": "VanillaIceCream", "image": "system-images;android-35;google_apis_playstore;x86_64"},
+    "9": {"api": 28, "codename": "Pie", "image": "system-images;android-28;google_apis;x86_64"},
+    "10": {"api": 29, "codename": "Q", "image": "system-images;android-29;google_apis;x86_64"},
+    "11": {"api": 30, "codename": "R", "image": "system-images;android-30;google_apis;x86_64"},
+    "12": {"api": 31, "codename": "S", "image": "system-images;android-31;google_apis;x86_64"},
+    "13": {"api": 33, "codename": "Tiramisu", "image": "system-images;android-33;google_apis;x86_64"},
+    "14": {"api": 34, "codename": "UpsideDownCake", "image": "system-images;android-34;google_apis;x86_64"},
+    "15": {"api": 35, "codename": "VanillaIceCream", "image": "system-images;android-35;google_apis;x86_64"},
 }
 
 # Default emulator settings (override with env vars when a machine is tight
@@ -331,11 +366,34 @@ def system_image_dir(android_info):
 
 
 def is_system_image_installed(android_info):
-    """True if the system image for the given Android version is installed."""
-    image_dir = system_image_dir(android_info)
-    if image_dir is None:
+    """True if the given system image package is installed.
+
+    Accepts the per-version dict from ``ANDROID_VERSIONS`` (uses its default
+    image), a package string (``system-images;android-34;google_apis;x86_64``)
+    or a dict with an explicit ``image`` key (as stored on devices).
+    """
+    if isinstance(android_info, str):
+        package = android_info
+    else:
+        package = (android_info or {}).get("image")
+    if not package or ANDROID_SDK_ROOT is None:
         return False
+    image_dir = Path(ANDROID_SDK_ROOT) / package.replace(";", "/")
     return (image_dir / "system.img").exists() or image_dir.exists()
+
+
+def installed_image_packages():
+    """All ``system-images;...`` packages present in the SDK."""
+    if ANDROID_SDK_ROOT is None:
+        return []
+    root = Path(ANDROID_SDK_ROOT) / "system-images"
+    if not root.exists():
+        return []
+    packages = []
+    for img in root.rglob("system.img"):
+        rel = img.parent.relative_to(ANDROID_SDK_ROOT)
+        packages.append(";".join(rel.parts))
+    return sorted(packages)
 
 
 def check_sdk():

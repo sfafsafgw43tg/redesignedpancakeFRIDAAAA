@@ -230,18 +230,22 @@ class SdkSetup:
         _log(self.progress, f"[SDK] Installed {', '.join(missing)}.")
         return True
 
-    def ensure_system_image(self, android_version="14"):
-        """Install the system image for an Android version if missing."""
+    def ensure_system_image(self, android_version="14", package=None, variant=None):
+        """Install a system image (by package name, or version + variant)."""
         info = config.ANDROID_VERSIONS.get(str(android_version))
         if not info:
             raise SdkSetupError(
                 f"Unsupported Android version {android_version}. "
                 f"Supported: {', '.join(sorted(config.ANDROID_VERSIONS, key=int))}"
             )
-        package = info["image"]
+        if not package:
+            try:
+                package = config.image_package(android_version, variant)
+            except ValueError as exc:
+                raise SdkSetupError(str(exc)) from None
         image_dir = self.sdk_root / package.replace(";", "/")
         if (image_dir / "system.img").exists() or image_dir.exists():
-            _log(self.progress, f"[SDK] System image for Android {android_version} already installed.")
+            _log(self.progress, f"[SDK] System image {package} already installed.")
             return True
         ok, output = self.install([package])
         if not ok:
@@ -268,13 +272,13 @@ class SdkSetup:
         info["ready"] = not problems
         return info
 
-    def full_setup(self, android_version="14"):
+    def full_setup(self, android_version="14", image_variant=None):
         """Everything needed to launch an emulator, in order."""
         self.ensure_root()
         self.sdkmanager()          # downloads command-line tools if needed
         self.ensure_base_tools()
         self.accept_licenses()
-        self.ensure_system_image(android_version)
+        self.ensure_system_image(android_version, variant=image_variant)
         info = self.verify()
         if info["ready"]:
             _log(self.progress, "[SDK] SDK is ready.")
@@ -286,7 +290,7 @@ class SdkSetup:
         return info
 
 
-def run_full_setup(sdk_root=None, android_version="14", progress=None):
+def run_full_setup(sdk_root=None, android_version="14", progress=None, image_variant=None):
     """Convenience wrapper used by bootstrap.py / the GUI."""
     setup = SdkSetup(sdk_root=sdk_root, progress=progress)
-    return setup.full_setup(android_version)
+    return setup.full_setup(android_version, image_variant=image_variant)
