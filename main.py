@@ -1,0 +1,237 @@
+"""
+AntiDetect Android Emulator - Main Entry Point
+"""
+import click
+import webbrowser
+from colorama import init, Fore, Style
+
+init()  # Initialize colorama
+
+@click.group()
+@click.version_option(version="1.0.0", prog_name="AntiDetect Emulator")
+def cli():
+    """🤖 AntiDetect Android Emulator - Anonymous phone emulation"""
+    pass
+
+
+@cli.command()
+@click.option("--host", default=None, help="Host to bind (default: 127.0.0.1, or GUI_HOST env)")
+@click.option("--port", default=None, type=int, help="Port to bind (default: 8080)")
+@click.option("--no-browser", is_flag=True, help="Don't open browser automatically")
+def gui(host, port, no_browser):
+    """Start the web GUI dashboard"""
+    import os
+    import config
+    from gui.app import create_app, socketio
+
+    host = host or os.environ.get("GUI_HOST", config.GUI_HOST)
+    port = port or int(os.environ.get("GUI_PORT", config.GUI_PORT))
+
+    print(f"{Fore.CYAN}🤖 AntiDetect Emulator{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}Starting GUI on http://{host}:{port}{Style.RESET_ALL}")
+
+    # Only auto-open a browser for loopback binds (0.0.0.0 isn't browsable).
+    if not no_browser and host not in ("0.0.0.0", "::"):
+        webbrowser.open(f"http://{host}:{port}")
+
+    app = create_app()
+    # allow_unsafe_werkzeug avoids the "production" guard when binding
+    # beyond localhost; the app is single-user and local-first.
+    socketio.run(app, host=host, port=port, debug=False, allow_unsafe_werkzeug=True)
+
+
+@cli.command("list")
+def list_devices():
+    """List all created devices"""
+    from core.device_manager import DeviceManager
+    
+    manager = DeviceManager()
+    devices = manager.list_devices()
+    
+    if not devices:
+        print(f"{Fore.YELLOW}No devices found. Create one with 'create' command.{Style.RESET_ALL}")
+        return
+    
+    print(f"\n{Fore.CYAN}📱 Your Devices:{Style.RESET_ALL}\n")
+    for device in devices:
+        status = f"{Fore.GREEN}● Running{Style.RESET_ALL}" if device.get("running") else f"{Fore.RED}○ Stopped{Style.RESET_ALL}"
+        print(f"  {device['name']}")
+        print(f"    Model: {device['model']}")
+        print(f"    Android: {device['android_version']}")
+        print(f"    Status: {status}")
+        print()
+
+
+@cli.command()
+@click.option("--model", "-m", required=True, help="Phone model (e.g., 'Samsung Galaxy S24')")
+@click.option("--android", "-a", default="14", help="Android version (9-15)")
+@click.option("--name", "-n", help="Device name (auto-generated if not specified)")
+@click.option("--proxy", "-p", help="Proxy address (e.g., socks5://127.0.0.1:1080)")
+def create(model, android, name, proxy):
+    """Create a new emulator device"""
+    import config
+    from core.device_manager import DeviceManager
+
+    if str(android) not in config.ANDROID_VERSIONS:
+        supported = ", ".join(sorted(config.ANDROID_VERSIONS, key=int))
+        print(f"{Fore.RED}✗ Unsupported Android version '{android}'. Supported: {supported}{Style.RESET_ALL}")
+        raise SystemExit(2)
+
+    manager = DeviceManager()
+
+    try:
+        device = manager.create_device(
+            model=model,
+            android_version=str(android),
+            name=name,
+            proxy=proxy
+        )
+        print(f"{Fore.GREEN}✓ Device created: {device['name']}{Style.RESET_ALL}")
+        print(f"  Model: {device['model']}")
+        print(f"  Android: {device['android_version']}")
+        if proxy:
+            print(f"  Proxy: {proxy}")
+        print(f"\n{Fore.CYAN}Launch it with:{Style.RESET_ALL} python main.py launch {device['name']}")
+    except Exception as e:
+        print(f"{Fore.RED}✗ Error: {e}{Style.RESET_ALL}")
+        raise SystemExit(1)
+
+
+@cli.command()
+@click.argument("name")
+@click.option("--frida", is_flag=True, help="Enable Frida hooks")
+@click.option("--no-wait", is_flag=True, help="Return immediately instead of waiting for boot")
+@click.option("--boot-timeout", default=None, type=int, help="Seconds to wait for boot (default: 180)")
+@click.option("--wipe", is_flag=True, help="Wipe emulator data before booting")
+def launch(name, frida, no_wait, boot_timeout, wipe):
+    """Launch a device by name"""
+    from core.device_manager import DeviceManager
+
+    manager = DeviceManager()
+
+    print(f"{Fore.CYAN}🚀 Launching {name}...{Style.RESET_ALL}")
+    if not no_wait:
+        print("Waiting for the emulator to boot (this can take a minute or two)...")
+
+    try:
+        device = manager.launch_device(
+            name,
+            enable_frida=frida,
+            wait_for_boot=not no_wait,
+            boot_timeout=boot_timeout,
+            wipe=wipe,
+        )
+        print(f"{Fore.GREEN}✓ Device launched successfully{Style.RESET_ALL}")
+        if isinstance(device, dict):
+            print(f"  Serial: {device.get('serial', 'unknown')}")
+        print(f"  Logs:   {manager.get_log_path(name)}")
+    except KeyboardInterrupt:
+        print(f"\n{Fore.YELLOW}Launch interrupted; the emulator may still be booting. "
+              f"Check logs with: python main.py logs {name}{Style.RESET_ALL}")
+    except Exception as e:
+        print(f"{Fore.RED}✗ Error: {e}{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}Run 'python main.py check_sdk' to verify your SDK setup.{Style.RESET_ALL}")
+        raise SystemExit(1)
+
+
+@cli.command()
+@click.argument("name")
+def stop(name):
+    """Stop a running device"""
+    from core.device_manager import DeviceManager
+    
+    manager = DeviceManager()
+    
+    try:
+        manager.stop_device(name)
+        print(f"{Fore.GREEN}✓ Device stopped{Style.RESET_ALL}")
+    except Exception as e:
+        print(f"{Fore.RED}✗ Error: {e}{Style.RESET_ALL}")
+
+
+@cli.command()
+@click.argument("name")
+@click.option("--lines", default=60, help="Number of log lines to show")
+def logs(name, lines):
+    """Show the emulator log for a device"""
+    from core.device_manager import DeviceManager
+
+    manager = DeviceManager()
+    print(manager.get_log_tail(name, lines=lines))
+
+
+@cli.command("delete")
+@click.argument("name")
+@click.option("--yes", is_flag=True, help="Skip confirmation")
+def delete(name, yes):
+    """Delete a device and its AVD"""
+    from core.device_manager import DeviceManager
+
+    manager = DeviceManager()
+    if not yes:
+        click.confirm(f"Delete device '{name}' and its AVD?", abort=True)
+    try:
+        manager.delete_device(name)
+        print(f"{Fore.GREEN}✓ Device deleted: {name}{Style.RESET_ALL}")
+    except Exception as e:
+        print(f"{Fore.RED}✗ Error: {e}{Style.RESET_ALL}")
+        raise SystemExit(1)
+
+
+@cli.command()
+def models():
+    """List available phone models"""
+    from profiles.device_profiles import get_all_models
+    
+    models = get_all_models()
+    
+    print(f"\n{Fore.CYAN}📱 Available Phone Models:{Style.RESET_ALL}\n")
+    
+    for brand, brand_models in models.items():
+        print(f"{Fore.YELLOW}{brand}:{Style.RESET_ALL}")
+        for model in brand_models[:5]:  # Show first 5
+            print(f"  • {model['name']}")
+        if len(brand_models) > 5:
+            print(f"  ... and {len(brand_models) - 5} more")
+        print()
+
+
+@cli.command("check_sdk")
+def check_sdk():
+    """Check Android SDK installation"""
+    import config
+
+    print(f"\n{Fore.CYAN}🔍 Checking Android SDK...{Style.RESET_ALL}\n")
+
+    info = config.check_sdk()
+
+    def line(ok, label, detail=""):
+        mark = f"{Fore.GREEN}✓{Style.RESET_ALL}" if ok else f"{Fore.RED}✗{Style.RESET_ALL}"
+        print(f"{mark} {label}{(': ' + detail) if detail else ''}")
+
+    line(bool(info["sdk_root_found"]), "SDK root", info["sdk_root"] or "not found")
+    line(info["emulator_found"], "Emulator", info["emulator_path"])
+    line(info["adb_found"], "ADB", info["adb_path"])
+    line(info["avdmanager_found"], "avdmanager", info["avdmanager_path"])
+    line(info["sdkmanager_found"], "sdkmanager", info["sdkmanager_path"])
+    print(f"  AVD home: {info['avd_home']}")
+
+    versions = info["installed_android_versions"]
+    print(f"\n  Installed system images: {', '.join(versions) if versions else 'none'}")
+    avds = info["avds"]
+    print(f"  Existing AVDs: {', '.join(avds) if avds else 'none'}")
+
+    if not info["ok"]:
+        print(f"\n{Fore.YELLOW}Set ANDROID_SDK_ROOT (or ANDROID_HOME) to your Android SDK "
+              f"directory, e.g.:{Style.RESET_ALL}")
+        print('  export ANDROID_SDK_ROOT="$HOME/Android/Sdk"        # Linux/macOS')
+        print('  setx ANDROID_SDK_ROOT "%LOCALAPPDATA%\\Android\\Sdk"  # Windows')
+        raise SystemExit(1)
+
+
+# Hyphenated alias so both `check_sdk` (README) and `check-sdk` work.
+cli.add_command(check_sdk, "check-sdk")
+
+
+if __name__ == "__main__":
+    cli()
