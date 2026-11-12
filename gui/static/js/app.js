@@ -309,6 +309,46 @@ function updateImageVariantHint() {
     }
 }
 
+async function loadAdbStatus() {
+    const hint = document.getElementById('adbStatusHint');
+    const log = document.getElementById('adbRepairLog');
+    try {
+        const response = await fetch('/api/adb/status');
+        const data = await response.json();
+        const version = (data.version || 'unknown').split('\n')[0];
+        if (hint) hint.textContent = `adb: ${data.path} — ${version}`;
+        if (log) log.textContent = data.listing || '';
+    } catch (error) {
+        if (hint) hint.textContent = 'Could not read adb status';
+    }
+}
+
+async function repairAdb() {
+    const button = document.getElementById('repairAdbBtn');
+    const log = document.getElementById('adbRepairLog');
+    if (button) { button.disabled = true; button.textContent = 'Repairing…'; }
+    if (log) log.textContent = 'Reconnecting…';
+    try {
+        const response = await fetch('/api/adb/repair', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        });
+        const data = await response.json();
+        if (log) log.textContent = (data.devices || '') + '\n' + (data.detail || '');
+        if (data.success) {
+            showToast(`ADB connected to ${data.serial}`, 'success');
+        } else {
+            showToast(data.detail || `ADB could not recover the device (state: ${data.state})`, 'error');
+        }
+        if (typeof loadDevices === 'function') loadDevices();
+    } catch (error) {
+        showToast('ADB repair failed: ' + error, 'error');
+    } finally {
+        if (button) { button.disabled = false; button.textContent = 'Repair ADB'; }
+    }
+}
+
 async function createDevice() {
     const name = document.getElementById('deviceName').value.trim();
     const model = document.getElementById('phoneModel').value;
@@ -652,6 +692,7 @@ let sdkInstallPoller = null;
 async function showSettings() {
     document.getElementById('settingsModal').classList.add('active');
     await loadSettings();
+    await loadAdbStatus();
 }
 
 function hideSettings() {

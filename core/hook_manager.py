@@ -36,6 +36,7 @@ class HookManager:
         self.scripts_dir = Path(__file__).parent.parent / "frida" / "scripts"
         self._active_sessions = {}
         self._frida_server_started = False
+        self.last_error = None
 
     def resolve_serial(self) -> Optional[str]:
         """Current target serial, auto-detecting when none was supplied."""
@@ -46,19 +47,38 @@ class HookManager:
             self.device_serial = detected
         return detected
 
-    def _adb(self, command: List[str]) -> Optional[str]:
-        """Execute ADB command against the resolved device."""
+    def _adb(self, command: List[str], timeout: int = 30, _retry: bool = True) -> Optional[str]:
+        """Execute ADB command against the resolved device.
+
+        An ``offline`` device (adbd restarting after ``adb root``) is healed
+        once and the command retried, instead of silently returning ``None``.
+        """
         serial = self.resolve_serial()
         if not serial:
-            print(f"[HookManager] No device connected ({adb.describe_devices()})")
+            self.last_error = f"No device connected ({adb.describe_devices()})"
+            print(f"[HookManager] {self.last_error}")
             return None
         cmd = [self.adb, "-s", serial] + command
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            return result.stdout.strip()
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         except Exception as e:
+            self.last_error = f"adb {' '.join(command)} failed: {e}"
             print(f"[HookManager] ADB error: {e}")
             return None
+
+        output = ((result.stdout or "") + (result.stderr or "")).strip()
+        lowered = output.lower()
+        if result.returncode != 0 and ("offline" in lowered or "no devices" in lowered):
+            if _retry:
+                ok, detail = adb.recover(serial)
+                print(f"[HookManager] Device was offline - {detail}")
+                if ok:
+                    return self._adb(command, timeout=timeout, _retry=False)
+            self.last_error = f"{serial} is offline: {output}"
+            return None
+        if result.returncode != 0 and output:
+            self.last_error = output
+        return output
 
     def is_device_ready(self) -> bool:
         """Check if device is booted and ready"""
@@ -82,43 +102,52 @@ class HookManager:
         return False
 
     def start_frida_server(self) -> bool:
-        """Start Frida server on device (via `adb root`, no `su`)."""
+        """Make sure frida-server is installed *and* running on the device.
+
+        Delegates to :class:`frida.frida_server_manager.FridaServerManager`,
+        which validates the binary, pushes it, waits for adbd after
+        ``adb root``, starts the server and verifies the process. Duplicating
+        that logic here is what used to leave the device offline mid-start.
+        """
+        serial = self.resolve_serial()
+        if not serial:
+            self.last_error = (
+                f"No running emulator matched this device. adb reports: "
+                f"{adb.describe_devices(include_avd=True)}"
+            )
+            print(f"[HookManager] {self.last_error}")
+            return False
+
         if self._frida_server_started and self.is_frida_server_running():
             return True
 
-        exists = self._adb(["shell", "ls", "/data/local/tmp/frida-server"])
-        if not exists or "No such file" in exists:
-            print("[HookManager] Frida server not found on the device. Installing it...")
-            try:
-                from frida.frida_server_manager import FridaServerManager
+        ready, state, detail = adb.wait_until_ready(serial, timeout=60)
+        if not ready:
+            self.last_error = (
+                f"{serial} is not usable (state: {state or 'not connected'}; {detail}). "
+                "adb says: " + adb.device_listing().replace("\n", " | ")
+            )
+            print(f"[HookManager] {self.last_error}")
+            return False
 
-                manager = FridaServerManager(self.resolve_serial())
-                ok, message = manager.install()
-                if ok:
-                    self._frida_server_started = True
-                    return True
-                print(f"[HookManager] {message}")
-            except Exception as exc:
-                print(f"[HookManager] Frida install error: {exc}")
-            if not self._push_frida_server():
-                print("[HookManager] Please push frida-server manually to /data/local/tmp/")
-                return False
+        try:
+            from frida.frida_server_manager import FridaServerManager
 
-        self._adb(["shell", "chmod", "755", "/data/local/tmp/frida-server"])
-        # Emulator user builds support `adb root`; after root, shell runs as root.
-        self._adb(["root"])
-        time.sleep(1)
-        # Daemonize: redirect output so the shell command returns immediately.
-        self._adb(["shell", "nohup /data/local/tmp/frida-server -D >/dev/null 2>&1 &"])
-        time.sleep(2)
+            manager = FridaServerManager(serial)
+            ok, message = manager.install()
+        except Exception as exc:  # noqa: BLE001 - surface everything
+            self.last_error = f"Frida install crashed: {type(exc).__name__}: {exc}"
+            print(f"[HookManager] {self.last_error}")
+            return False
 
-        if not self.is_frida_server_running():
-            # Fallback: try `su` in case this is a rooted userdebug image.
-            self._adb(["shell", "su", "-c", "/data/local/tmp/frida-server -D"])
-            time.sleep(2)
+        if ok:
+            self._frida_server_started = True
+            self.last_error = None
+            return True
 
-        self._frida_server_started = self.is_frida_server_running()
-        return self._frida_server_started
+        self.last_error = manager.last_error or message
+        print(f"[HookManager] {self.last_error}")
+        return False
 
     def _push_frida_server(self) -> bool:
         """Push frida-server binary to device (downloads if needed)"""

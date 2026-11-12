@@ -193,6 +193,31 @@ Launching from the GUI is **asynchronous**: `POST /api/devices/<name>/launch` re
 3. Retry cleanly: `python main.py launch <name> --wipe`. Launches use `-no-snapshot`, so a corrupt quickboot snapshot cannot block startup.
 4. Multiple emulators are supported: each launch picks the next free console port (5554, 5556, …) and records its own serial, so spoofing/stop/Frida always target the right instance.
 
+### 🔌 "Device is not ready (state: offline)" / Spoof & Frida do nothing
+`adb root` restarts adbd, so for a few seconds afterwards `adb devices` shows the
+emulator as `offline` and every `adb shell`/`push` fails. The app used to check
+the state exactly during that window and abort ("not ready to spoof (state:
+offline)", "frida-server did not start"), which made Spoof/Hooks look broken
+right after launch. A stale adb server (e.g. started by Android Studio with a
+different `platform-tools`) leaves the device stuck offline in the same way.
+
+Now:
+
+- `adb root` waits until adbd is back and verifies `uid=0` before anything else runs;
+- boot detection, spoofing, Frida install and hook injection call
+  `adb.wait_until_ready()`, which rides out the offline window and heals it with
+  `adb reconnect` (and an adb-server restart as a fallback);
+- **Settings → Repair ADB** runs the same recovery manually and shows
+  `adb devices -l` plus the adb version; **Check** shows the adb path/version;
+- failures name the real cause instead of a generic toast.
+
+API: `POST /api/adb/repair` (`{"serial": "emulator-5554"}`, optional),
+`GET /api/adb/status`.
+
+If Repair cannot bring the device back, the platform-tools in the selected SDK are
+probably older than the system image: run **Settings → Install / repair SDK
+components** (it installs `platform-tools`), or `python main.py setup -a 14`.
+
 ### 🧩 Frida says "not installed" / installation fails
 The Frida card and the spoofing buttons always target the emulator that is **actually running**. The serial is resolved from the device's saved launch serial, or by matching the running emulator's AVD name (`adb -s <serial> emu avd name`) - so a second emulator on port 5556, or one started in Android Studio, is no longer mistaken for `emulator-5554`. A resolved serial is written back to `data/devices/<name>.json`.
 
@@ -260,7 +285,8 @@ python tests/cli_gui_smoke_test.py         # CLI + GUI endpoints incl. async lau
 python tests/settings_desktop_test.py      # SDK selection/persistence, settings API, desktop mode
 python tests/console_spoof_test.py         # sensor/battery console auth + syntax
 python tests/frida_serial_test.py          # serial binding, Frida status/install, spoofing API
-python tests/camera_test.py               # webcam0 selection, launch flags, editing, validation
+python tests/camera_test.py                # webcam0 selection, launch flags, editing, validation
 python tests/integration_launch_test.py    # create/launch/stop, image variants, rootable flags
+python tests/adb_recovery_test.py          # offline device healing, adb root, repair endpoint
 ```
 Both build a stub SDK (`tests/fake_sdk.py`) with fake `emulator`/`adb`/`avdmanager`, so the real launch code path is exercised without downloading anything.

@@ -41,6 +41,14 @@ write_exe(SDK / "emulator" / "emulator", """\
       echo "0 KVM (version 12) is installed and usable."
       exit 0
     fi
+    port=5554
+    prev=""
+    for a in "$@"; do
+      [ "$prev" = "-port" ] && port="$a"
+      prev="$a"
+    done
+    serial="emulator-$port"
+    [ -n "$FAKE_SDK_STATE" ] && echo "$serial" > "$FAKE_SDK_STATE/$(echo "$serial" | tr ':' '_').serial"
     echo "INFO: emulator starting with args: $@"
     sleep 60
     """)
@@ -57,9 +65,15 @@ write_exe(SDK / "platform-tools" / "adb", """\
           echo "$s\\tdevice"
         done
         ;;
+      get-state) cat "$FAKE_SDK_STATE"/*.serial >/dev/null 2>&1 && echo device || echo unknown ;;
+      version) echo "Android Debug Bridge version 1.0.41" ;;
+      reconnect|kill-server|start-server|wait-for-device) echo ok ;;
       -s)
         serial="$2"; shift 2
         case "$1" in
+          get-state) echo device ;;
+          reconnect) echo reconnected ;;
+          root) echo "restarting adbd as root" ;;
           shell)
             shift
             if [ "$1" = "getprop" ] && [ "$2" = "sys.boot_completed" ]; then
@@ -72,7 +86,6 @@ write_exe(SDK / "platform-tools" / "adb", """\
             echo "OK"
             rm -f "$FAKE_SDK_STATE/$(echo "$serial" | tr ':' '_').serial"
             ;;
-          root) echo "adbd cannot run as root in production builds" ;;
           push) echo "1 file pushed" ;;
           *) echo "OK" ;;
         esac

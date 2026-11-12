@@ -1044,28 +1044,40 @@ tag.id={tag_id}
         return None, output
 
     def wait_for_boot(self, serial, timeout=180, process=None):
-        """Poll ``sys.boot_completed`` until the device is ready."""
+        """Poll ``sys.boot_completed`` until the device is ready.
+
+        A freshly started emulator shows up as ``offline`` in ``adb devices``
+        for a while (and again after ``adb root``); that is normal, so the loop
+        heals the connection instead of burning the whole boot timeout on it.
+        """
         if not Path(config.ADB_PATH).exists():
             raise SdkNotFoundError(f"ADB not found at {config.ADB_PATH}")
         start = time.time()
+        offline_hits = 0
+        state = None
         while time.time() - start < timeout:
             if process is not None and process.poll() is not None:
                 raise EmulatorLaunchError(
                     f"Emulator exited (code {process.returncode}) while waiting for boot."
                 )
             try:
-                result = subprocess.run(
-                    [config.ADB_PATH, "-s", serial, "shell", "getprop", "sys.boot_completed"],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-                if (result.stdout or "").strip() == "1":
-                    return True
+                state = adb.get_state(serial)
+                if state == "device":
+                    offline_hits = 0
+                    if adb.boot_completed(serial, timeout=10):
+                        return True
+                elif state in ("offline", "unknown", None):
+                    offline_hits += 1
+                    if offline_hits == 4:
+                        ok, detail = adb.recover(serial, timeout=30)
+                        print(f"[DeviceManager] adb reported '{state}' for {serial}; {detail}")
             except Exception:
                 pass
             time.sleep(2)
-        raise BootTimeoutError(f"Timed out waiting for {serial} to boot.")
+        raise BootTimeoutError(
+            f"Timed out waiting for {serial} to boot (last adb state: "
+            f"{state or 'not connected'}). {adb.device_listing()}"
+        )
 
     def get_log_path(self, name):
         return config.LOGS_DIR / f"{name}.log"

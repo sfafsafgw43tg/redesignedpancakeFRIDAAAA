@@ -62,14 +62,57 @@ def setup_fake_sdk():
     write_exe(sdk / "platform-tools" / "adb", """\
         echo "adb $@" >> "$FAKE_SDK_LOG"
         state="$FAKE_SDK_STATE"
+
+        # Simulated adbd restart: `offline-polls` counts down, like the real
+        # `adb root` (the device shows "offline" for a few seconds).
+        decay() {
+          f="$1"
+          [ -e "$f" ] || return 0
+          serial=$(basename "$f" .state)
+          if [ "$(cat "$f")" = "offline" ] && [ -e "$state/$serial.offline-polls" ]; then
+            left=$(cat "$state/$serial.offline-polls" 2>/dev/null || echo 0)
+            left=$((left - 1))
+            if [ "$left" -le 0 ]; then
+              echo "device" > "$f"
+              rm -f "$state/$serial.offline-polls"
+            else
+              echo "$left" > "$state/$serial.offline-polls"
+            fi
+          fi
+        }
+
         case "$1" in
           devices)
             echo "List of devices attached"
             for f in "$state"/*.state; do
               [ -e "$f" ] || continue
+              decay "$f"
               serial=$(basename "$f" .state)
               echo "$serial\t$(cat "$f")"
             done
+            ;;
+          -l) : ;;
+          get-state)
+            serial="$2"
+            decay "$state/$serial.state"
+            cat "$state/$serial.state" 2>/dev/null || { echo "error: device '$serial' not found"; exit 1; }
+            ;;
+          reconnect)
+            # `adb reconnect [offline]` brings offline devices back.
+            for f in "$state"/*.state; do
+              [ -e "$f" ] || continue
+              serial=$(basename "$f" .state)
+              echo "device" > "$f"
+              rm -f "$state/$serial.offline-polls"
+            done
+            echo "reconnected"
+            ;;
+          kill-server|start-server|wait-for-device)
+            echo "ok"
+            ;;
+          version)
+            echo "Android Debug Bridge version 1.0.41"
+            echo "Version 34.0.5-10839507"
             ;;
           root)
             if [ -e "$state/root-allowed" ]; then
@@ -82,6 +125,29 @@ def setup_fake_sdk():
           -s)
             serial="$2"; shift 2
             case "$1" in
+              get-state)
+                decay "$state/$serial.state"
+                cat "$state/$serial.state" 2>/dev/null || { echo "error: device '$serial' not found"; exit 1; }
+                ;;
+              reconnect)
+                echo "device" > "$state/$serial.state"
+                rm -f "$state/$serial.offline-polls"
+                echo "reconnected"
+                ;;
+              root)
+                if [ -e "$state/root-allowed" ]; then
+                  echo "restarting adbd as root"
+                  # adbd restarts: report "offline" for a couple of polls.
+                  echo "offline" > "$state/$serial.state"
+                  echo "2" > "$state/$serial.offline-polls"
+                else
+                  echo "adbd cannot run as root in production builds"
+                  exit 1
+                fi
+                ;;
+              wait-for-device)
+                echo "ok"
+                ;;
               shell)
                 shift
                 cmd="$*"

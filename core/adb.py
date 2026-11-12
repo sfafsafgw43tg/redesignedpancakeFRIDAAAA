@@ -10,7 +10,9 @@ Everything now resolves the serial through :func:`detect_serial`, which
 matches saved devices to *running* emulators (including by AVD name), so the
 GUI and CLI always target the right instance.
 """
+import re
 import subprocess
+import time
 
 import config
 
@@ -61,6 +63,151 @@ def device_state(serial, timeout=10):
             return device["state"]
     return None
 
+
+
+def version(timeout=10):
+    """``(version text, (major, minor, patch))`` for the adb binary in use."""
+    result = _run(["version"], timeout=timeout)
+    if result is None:
+        return "", None
+    text = ((result.stdout or "") + (result.stderr or "")).strip()
+    match = re.search(r"version (\d+)\.(\d+)\.(\d+)", text)
+    if not match:
+        return text, None
+    return text, tuple(int(part) for part in match.groups())
+
+
+def device_listing(timeout=15):
+    """``adb devices -l`` output (for error messages / diagnostics)."""
+    result = _run(["devices", "-l"], timeout=timeout)
+    if result is None:
+        return "adb is not runnable"
+    return ((result.stdout or "") + (result.stderr or "")).strip()
+
+
+def get_state(serial, timeout=10):
+    """State reported by ``adb -s <serial> get-state`` (falls back to ``devices``)."""
+    result = _run(["-s", serial, "get-state"], timeout=timeout)
+    if result is not None and result.returncode == 0:
+        state = (result.stdout or "").strip()
+        if state and state != "unknown":
+            return state
+    return device_state(serial, timeout=timeout)
+
+
+def wait_for_state(serial, target="device", timeout=60, poll=1.0):
+    """Poll until ``serial`` reaches ``target``; returns the last seen state."""
+    deadline = time.time() + timeout
+    state = get_state(serial)
+    while time.time() < deadline:
+        if state == target:
+            return state
+        time.sleep(poll)
+        state = get_state(serial)
+    return state
+
+
+def recover(serial=None, timeout=45):
+    """Try to heal an ``offline`` device.
+
+    ``adb root`` restarts adbd (which makes the device briefly ``offline``), and
+    a stale/old adb server can also leave it stuck there. Reconnect first, then
+    restart the local adb server as a heavier fallback.
+
+    Returns ``(ok, detail)``.
+    """
+    if not adb_available():
+        return False, f"adb not found at {config.ADB_PATH}"
+
+    if serial:
+        _run(["-s", serial, "reconnect"], timeout=20)
+    else:
+        _run(["reconnect"], timeout=20)
+    if serial and wait_for_state(serial, "device", timeout=max(8, timeout // 2)) == "device":
+        return True, "adb reconnect"
+
+    _run(["kill-server"], timeout=20)
+    _run(["start-server"], timeout=30)
+    if serial:
+        _run(["-s", serial, "wait-for-device"], timeout=15)
+        if wait_for_state(serial, "device", timeout=timeout) == "device":
+            return True, "restarted the adb server"
+    return False, (
+        "adb reconnect and a local adb server restart did not get the device back "
+        "online (the platform-tools in this SDK may be too old for the system "
+        "image - update 'platform-tools' with sdkmanager)"
+    )
+
+
+def root(serial, timeout=60, poll=1.0):
+    """Run ``adb root`` and *wait* for adbd to come back.
+
+    ``adb root`` restarts adbd; for a few seconds the device is ``offline`` and
+    every shell command fails. Ignoring that was why spoofing/Frida appeared to
+    do nothing right after rooting.
+    """
+    result = _run(["-s", serial, "root"], timeout=30)
+    text = ((result.stdout or "") + (result.stderr or "")).strip() if result else ""
+    lowered = text.lower()
+    if "cannot run as root" in lowered or "production builds" in lowered:
+        return False, text or "adb root refused (user build)"
+
+    state = wait_for_state(serial, "device", timeout=timeout, poll=poll)
+    if state != "device":
+        return False, text or f"adbd did not come back after 'adb root' (state: {state})"
+
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        probe = _run(["-s", serial, "shell", "id"], timeout=15)
+        uid = ((probe.stdout or "") if probe else "").strip()
+        if "uid=0" in uid:
+            return True, text or "adb root"
+        if uid and "uid=" in uid:
+            # Not root (yet); give adbd a moment, but don't hang forever.
+            time.sleep(poll)
+            continue
+        time.sleep(poll)
+    return False, text or "adb root ran but the shell is not root"
+
+
+def wait_until_ready(serial, timeout=120, poll=1.5):
+    """Wait until ``adb shell`` works and boot has finished.
+
+    Handles the states that a normal emulator passes through: ``offline`` right
+    after start (or right after ``adb root``), a device that briefly disappears
+    from ``adb devices`` while adbd restarts, and ``unauthorized``.
+
+    Returns ``(ready, state, detail)``.
+    """
+    deadline = time.time() + timeout
+    state = None
+    detail = ""
+    offline_hits = 0
+
+    while time.time() < deadline:
+        state = get_state(serial)
+        if state == "device":
+            remaining = max(5, int(deadline - time.time()))
+            if boot_completed(serial, timeout=min(20, remaining)):
+                return True, state, ""
+            detail = "connected but Android has not finished booting"
+        elif state == "unauthorized":
+            return False, state, "the USB debugging prompt was not accepted"
+        elif state in ("offline", "unknown", None):
+            offline_hits += 1
+            detail = f"adb reports {state or 'no device'}"
+            if offline_hits == 1:
+                # Very common right after `adb root`: adbd is restarting.
+                time.sleep(3)
+                continue
+            if time.time() < deadline:
+                ok, rec_detail = recover(serial, timeout=max(10, min(45, int(deadline - time.time()))))
+                detail += f" - {rec_detail}"
+        else:
+            detail = f"unexpected adb state: {state}"
+        time.sleep(poll)
+
+    return False, state, detail
 
 def boot_completed(serial, timeout=10):
     """True when ``sys.boot_completed`` is 1 for ``serial``."""

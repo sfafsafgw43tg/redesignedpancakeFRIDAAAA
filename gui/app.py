@@ -485,6 +485,58 @@ def create_app():
             return jsonify({"success": False, "error": "No file selected."})
         return jsonify({"success": True, "path": path})
 
+    @app.route("/api/adb/repair", methods=["POST"])
+    def repair_adb():
+        """Heal an offline device / restart the local adb server.
+
+        ``adb root`` restarts adbd and leaves the device ``offline`` for a few
+        seconds; a stale adb server (e.g. started by Android Studio with a
+        different platform-tools version) can leave it stuck there. This runs
+        ``adb reconnect`` and, if needed, restarts the adb server.
+        """
+        from core import adb
+
+        data = request.get_json(silent=True) or {}
+        serial = (data.get("serial") or "").strip() or None
+        if not serial:
+            for device in manager.list_devices():
+                serial = _device_serial(device)
+                if serial:
+                    break
+        if not serial:
+            serial = adb.detect_serial()
+
+        ok, detail = adb.recover(serial, timeout=45)
+        state = adb.get_state(serial) if serial else None
+        booted, ready_state, ready_detail = False, state, detail
+        if serial and state == "device":
+            booted, ready_state, ready_detail = adb.wait_until_ready(serial, timeout=60)
+        adb_text, adb_version = adb.version()
+        return jsonify({
+            "success": bool(ok and state == "device" and booted),
+            "serial": serial,
+            "state": ready_state or state,
+            "booted": bool(booted),
+            "detail": ready_detail or detail,
+            "adb_version": adb_text,
+            "devices": adb.device_listing(),
+        })
+
+    @app.route("/api/adb/status")
+    def adb_status():
+        """adb version + raw device listing (diagnostics)."""
+        from core import adb
+
+        text, parsed = adb.version()
+        return jsonify({
+            "path": config.ADB_PATH,
+            "available": adb.adb_available(),
+            "version": text,
+            "version_tuple": list(parsed) if parsed else None,
+            "devices": adb.devices(),
+            "listing": adb.device_listing(),
+        })
+
     @app.route("/api/devices/<name>/apply-antidetect", methods=["POST"])
     def apply_antidetect(name):
         """Apply system + hardware spoofing to the running emulator."""
@@ -511,28 +563,27 @@ def create_app():
                 ),
             }), 409
 
-        # Wait (bounded) for the emulator to finish booting when it is
-        # still starting, instead of failing immediately.
-        deadline = time.time() + wait_seconds
-        while time.time() < deadline:
-            state = adb.device_state(serial)
-            if state in ("offline", "unauthorized"):
-                break
-            if adb.boot_completed(serial):
-                break
-            time.sleep(2)
-        else:
-            state = adb.device_state(serial)
-
-        if not adb.boot_completed(serial):
+        # Wait for the emulator to boot - and heal it when adb reports
+        # "offline". That state is normal for a few seconds right after
+        # `adb root` (adbd restarts) and used to abort spoofing immediately.
+        ready, state, detail = adb.wait_until_ready(serial, timeout=max(30, wait_seconds))
+        if not ready:
+            adb_text, _ = adb.version()
             return jsonify({
                 "success": False,
                 "serial": serial,
+                "state": state,
                 "error": (
-                    f"{serial} is not ready to spoof (state: {state or 'not connected'}). "
+                    f"{serial} is not ready to spoof (state: {state or 'not connected'}"
+                    + (f" - {detail}" if detail else "")
+                    + "). "
                     + ("Accept the USB debugging prompt on the device."
                        if state == "unauthorized" else
-                       "Wait for the boot to finish, then retry.")
+                       "Press 'Repair ADB' in Settings, then retry. If it keeps "
+                       "happening, the platform-tools in this SDK are probably too "
+                       "old for the system image - update 'platform-tools'. adb says: "
+                       + adb.device_listing().replace(chr(10), " | "))
+                    + (f" [{adb_text.splitlines()[0]}]" if adb_text else "")
                 ),
             }), 409
 
@@ -576,10 +627,8 @@ def create_app():
                 "success": False,
                 "serial": serial,
                 "error": (
-                    "Could not start frida-server on " + serial + ". "
-                    "Use 'Download & Install' in the Frida Server card - it now "
-                    "shows the exact error, and you can install from a local "
-                    "file if GitHub is blocked."
+                    f"Could not start frida-server on {serial}: "
+                    + (hooks.last_error or "unknown error")
                 ),
             })
 

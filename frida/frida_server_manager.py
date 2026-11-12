@@ -223,24 +223,29 @@ class FridaServerManager:
         return "frida-server" in (output or "")
 
     def ensure_root(self):
-        """Try to get root; returns ``(is_root, detail)``."""
+        """Try to get root; returns ``(is_root, detail)``.
+
+        ``adb root`` restarts adbd, so the device goes ``offline`` for a few
+        seconds. :func:`core.adb.root` waits for it to come back - querying
+        immediately (as this used to) reported failure even when root worked.
+        """
         if self.is_root is not None:
             return self.is_root, "cached"
+        serial = self.serial
         ok, out = self._adb(["shell", "id"])
         if ok and "uid=0" in (out or ""):
             self.is_root = True
             return True, "already root"
 
-        ok, out = self._adb(["root"])
-        detail = out or "adb root failed"
-        for _ in range(20):
-            time.sleep(0.5)
-            ok2, whoami = self._adb(["shell", "id"])
-            if ok2 and "uid=0" in (whoami or ""):
+        if serial:
+            rooted, detail = adb.root(serial)
+            if rooted:
                 self.is_root = True
-                return True, "adb root"
+                return True, detail or "adb root"
+            self.is_root = False
+            return False, detail
         self.is_root = False
-        return False, detail
+        return False, "adb root failed"
 
     def remote_version(self):
         ok, out = self._adb(["shell", f"{REMOTE_PATH} --version"], timeout=30)
@@ -439,9 +444,12 @@ class FridaServerManager:
         if not ok:
             return self._fail(message)
 
-        if not adb.boot_completed(self.serial):
+        state = adb.get_state(self.serial)
+        if state != "device" or not adb.boot_completed(self.serial):
             return self._fail(
-                f"{self.serial} is still booting - wait for the home screen, then retry."
+                f"{self.serial} cannot be reached (adb state: {state or 'not listed'}). "
+                "Wait for the home screen, or press Repair in the dashboard to "
+                "reconnect adb, then retry."
             )
 
         # Remove a stale/partial copy first (a half-written file cannot be executed).
@@ -551,6 +559,15 @@ class FridaServerManager:
             self._fail(
                 "No device connected. Start an emulator (Launch in the dashboard), "
                 f"then retry. adb says: {adb.describe_devices()}."
+            )
+            return False, self.last_error
+
+        ready, state, detail = adb.wait_until_ready(self.serial, timeout=90)
+        if not ready:
+            self._fail(
+                f"{self.serial} is not usable yet (state: {state or 'not connected'}; "
+                f"{detail}). adb says: {adb.device_listing().replace(chr(10), ' | ')}. "
+                "Wait for the emulator to finish booting and retry."
             )
             return False, self.last_error
 

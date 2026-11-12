@@ -236,6 +236,24 @@
                     </div>
 
                     <div class="form-group">
+                        <label>ADB connection</label>
+                        <div class="input-row">
+                            <button class="btn btn-primary" onclick="repairAdb()" id="repairAdbBtn">
+                                Repair ADB
+                            </button>
+                            <button class="btn btn-secondary" onclick="loadAdbStatus()">
+                                Check
+                            </button>
+                        </div>
+                        <small class="hint" id="adbStatusHint">
+                            Fixes an emulator stuck in the <code>offline</code> state
+                            (common right after <code>adb root</code> or after Android
+                            Studio started a different adb server).
+                        </small>
+                        <pre class="install-log" id="adbRepairLog"></pre>
+                    </div>
+
+                    <div class="form-group">
                         <label>App mode</label>
                         <small class="hint" id="desktopHint">Checking…</small>
                     </div>
