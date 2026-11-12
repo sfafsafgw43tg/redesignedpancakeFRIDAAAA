@@ -162,6 +162,18 @@ Launching from the GUI is **asynchronous**: `POST /api/devices/<name>/launch` re
 3. Retry cleanly: `python main.py launch <name> --wipe`. Launches use `-no-snapshot`, so a corrupt quickboot snapshot cannot block startup.
 4. Multiple emulators are supported: each launch picks the next free console port (5554, 5556, …) and records its own serial, so spoofing/stop/Frida always target the right instance.
 
+### 🧩 Frida says "not installed" / installation fails
+The Frida card and the spoofing buttons always target the emulator that is **actually running**. The serial is resolved from the device's saved launch serial, or by matching the running emulator's AVD name (`adb -s <serial> emu avd name`) - so a second emulator on port 5556, or one started in Android Studio, is no longer mistaken for `emulator-5554`. A resolved serial is written back to `data/devices/<name>.json`.
+
+If installing fails, the toast now shows the real reason (no device, `adb push` error, GitHub blocked, server didn't start). Fixes, in order:
+
+1. Start the emulator and wait for the home screen, then press **Download & Install** again.
+2. **From file…** - download `frida-server-16.1.4-android-<abi>.xz` from the [Frida releases](https://github.com/frida/frida/releases) in a browser and pick it; the `.xz`/`.zip` archive is decompressed automatically.
+3. Manual: copy the extracted binary to `data/frida-server`, then press **Install** (it will be pushed and started with `adb root`).
+4. Check the device side with `adb shell /data/local/tmp/frida-server` (or `adb shell cat /data/local/tmp/frida.log`).
+
+API: `GET /api/status/frida?serial=…` (auto-detects when omitted), `POST /api/frida/install` (`{"serial": …, "local_path": …}`), `GET /api/frida/install/status`, `POST /api/frida/pick-server`.
+
 Environment knobs: `EMULATOR_RAM` (MB, default 4096), `EMULATOR_CORES` (default 4), `EMULATOR_GPU_MODE` (default `auto`, e.g. `swiftshader_indirect` for software rendering), `EMULATOR_BOOT_TIMEOUT`/`EMULATOR_START_TIMEOUT` (in `config.py`), `GUI_HOST`/`GUI_PORT`.
 
 ---
@@ -215,5 +227,6 @@ python tests/integration_launch_test.py   # create/launch/stop/port allocation/p
 python tests/cli_gui_smoke_test.py         # CLI + GUI endpoints incl. async launch
 python tests/settings_desktop_test.py      # SDK selection/persistence, settings API, desktop mode
 python tests/console_spoof_test.py         # sensor/battery console auth + syntax
+python tests/frida_serial_test.py          # serial binding, Frida status/install, spoofing API
 ```
 Both build a stub SDK (`tests/fake_sdk.py`) with fake `emulator`/`adb`/`avdmanager`, so the real launch code path is exercised without downloading anything.

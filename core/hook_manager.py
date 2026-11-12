@@ -23,21 +23,36 @@ from pathlib import Path
 from typing import Optional, Dict, List
 
 import config
+from core import adb
 
 
 class HookManager:
     """Centralized management for all Frida anti-detection hooks"""
 
-    def __init__(self, device_serial: str = "emulator-5554"):
-        self.device_serial = device_serial
+    def __init__(self, device_serial: Optional[str] = None):
+        # None => resolve the running device automatically on each call.
+        self.device_serial = device_serial or None
         self.adb = config.ADB_PATH
         self.scripts_dir = Path(__file__).parent.parent / "frida" / "scripts"
         self._active_sessions = {}
         self._frida_server_started = False
 
+    def resolve_serial(self) -> Optional[str]:
+        """Current target serial, auto-detecting when none was supplied."""
+        if self.device_serial and adb.device_state(self.device_serial) == "device":
+            return self.device_serial
+        detected = adb.detect_serial(preferred=self.device_serial)
+        if detected:
+            self.device_serial = detected
+        return detected
+
     def _adb(self, command: List[str]) -> Optional[str]:
-        """Execute ADB command"""
-        cmd = [self.adb, "-s", self.device_serial] + command
+        """Execute ADB command against the resolved device."""
+        serial = self.resolve_serial()
+        if not serial:
+            print(f"[HookManager] No device connected ({adb.describe_devices()})")
+            return None
+        cmd = [self.adb, "-s", serial] + command
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             return result.stdout.strip()
@@ -73,7 +88,18 @@ class HookManager:
 
         exists = self._adb(["shell", "ls", "/data/local/tmp/frida-server"])
         if not exists or "No such file" in exists:
-            print("[HookManager] Frida server not found. Attempting to push...")
+            print("[HookManager] Frida server not found on the device. Installing it...")
+            try:
+                from frida.frida_server_manager import FridaServerManager
+
+                manager = FridaServerManager(self.resolve_serial())
+                ok, message = manager.install()
+                if ok:
+                    self._frida_server_started = True
+                    return True
+                print(f"[HookManager] {message}")
+            except Exception as exc:
+                print(f"[HookManager] Frida install error: {exc}")
             if not self._push_frida_server():
                 print("[HookManager] Please push frida-server manually to /data/local/tmp/")
                 return False

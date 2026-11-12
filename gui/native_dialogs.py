@@ -79,6 +79,67 @@ def _pick_with_tk(title, initialdir):
     return result.get("path") or None
 
 
+def _pick_file_with_webview(title, initialdir):
+    window = get_desktop_window()
+    if window is None:
+        return None
+    try:
+        import webview  # type: ignore
+
+        result = window.create_file_dialog(
+            getattr(webview, "OPEN_DIALOG", webview.FILE_DIALOG),
+            directory=initialdir or "",
+        )
+    except Exception:
+        return None
+    if not result:
+        return None
+    if isinstance(result, (list, tuple)):
+        return result[0] if result else None
+    return result
+
+
+def _pick_file_with_tk(title, initialdir):
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception:
+        return None
+
+    result = {}
+
+    def run():
+        try:
+            root = tk.Tk()
+            root.withdraw()
+            try:
+                root.attributes("-topmost", True)
+            except Exception:
+                pass
+            result["path"] = filedialog.askopenfilename(
+                title=title, initialdir=initialdir or None
+            )
+            root.destroy()
+        except Exception:
+            result["path"] = None
+
+    if threading.current_thread() is threading.main_thread():
+        run()
+    else:
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        thread.join(timeout=300)
+    return result.get("path") or None
+
+
+def pick_file(title="Select a file", initialdir=None):
+    """Open a native open-file dialog and return the chosen path (or None)."""
+    path = _pick_file_with_webview(title, initialdir)
+    if path:
+        return path
+    return _pick_file_with_tk(title, initialdir)
+
+
 def pick_sdk_directory(title="Select your Android SDK folder", initialdir=None):
     """Open a native folder picker and return the chosen path (or None)."""
     path = _pick_with_webview(title, initialdir)

@@ -43,12 +43,17 @@ def setup_fake_sdk():
           exit 0
         fi
         port=5554
+        avd=""
         prev=""
         for a in "$@"; do
           if [ "$prev" = "-port" ]; then port="$a"; fi
+          if [ "$prev" = "-avd" ]; then avd="$a"; fi
           prev="$a"
         done
-        echo "emulator-$port" > "$FAKE_SDK_STATE/emulator-$port.running"
+        serial="emulator-$port"
+        echo "device" > "$FAKE_SDK_STATE/$serial.state"
+        echo "1" > "$FAKE_SDK_STATE/$serial.boot"
+        echo "$avd" > "$FAKE_SDK_STATE/$serial.avd"
         echo "INFO: emulator starting with args: $@"
         sleep 60
         """)
@@ -58,9 +63,10 @@ def setup_fake_sdk():
         case "$1" in
           devices)
             echo "List of devices attached"
-            for f in "$FAKE_SDK_STATE"/*.running; do
+            for f in "$FAKE_SDK_STATE"/*.state; do
               [ -e "$f" ] || continue
-              echo "$(cat "$f")\\tdevice"
+              serial=$(basename "$f" .state)
+              echo "$serial\t$(cat "$f")"
             done
             ;;
           -s)
@@ -68,22 +74,57 @@ def setup_fake_sdk():
             case "$1" in
               shell)
                 shift
-                if [ "$1" = "getprop" ] && [ "$2" = "sys.boot_completed" ]; then
-                  echo 1
-                elif [ "$1" = "ls" ]; then
-                  echo "/data/local/tmp/frida-server"
-                elif [ "$1" = "ps" ]; then
-                  echo "system  1234  1  frida-server"
-                else
-                  echo ""
-                fi
+                cmd="$*"
+                case "$cmd" in
+                  *"getprop sys.boot_completed"*)
+                    cat "$FAKE_SDK_STATE/$serial.boot" 2>/dev/null || echo 0
+                    ;;
+                  *"getprop ro.product.cpu.abi"*)
+                    echo "x86_64"
+                    ;;
+                  *"getprop"*)
+                    echo ""
+                    ;;
+                  *"ls /data/local/tmp/frida-server"*)
+                    if [ -e "$FAKE_SDK_STATE/frida-installed" ]; then
+                      echo "/data/local/tmp/frida-server"
+                    else
+                      echo "ls: /data/local/tmp/frida-server: No such file or directory"
+                    fi
+                    ;;
+                  chmod*)
+                    echo ""
+                    ;;
+                  ps*)
+                    if [ -e "$FAKE_SDK_STATE/frida-running" ]; then
+                      echo "root  4242  1  frida-server"
+                    fi
+                    ;;
+                  *nohup*frida-server*)
+                    [ -e "$FAKE_SDK_STATE/frida-installed" ] && touch "$FAKE_SDK_STATE/frida-running"
+                    echo ""
+                    ;;
+                  *)
+                    echo ""
+                    ;;
+                esac
                 ;;
               emu)
-                echo "OK"
-                rm -f "$FAKE_SDK_STATE/$(echo "$serial" | tr ':' '_').running"
+                if [ "$2" = "kill" ]; then
+                  rm -f "$FAKE_SDK_STATE/$serial.state" "$FAKE_SDK_STATE/$serial.boot" "$FAKE_SDK_STATE/$serial.avd"
+                  echo "OK"
+                elif [ "$2" = "avd" ] && [ "$3" = "name" ]; then
+                  cat "$FAKE_SDK_STATE/$serial.avd" 2>/dev/null || echo "unknown"
+                  echo "OK"
+                else
+                  echo "OK"
+                fi
                 ;;
               root) echo "restarting adbd as root" ;;
-              push) echo "1 file pushed" ;;
+              push)
+                touch "$FAKE_SDK_STATE/frida-installed"
+                echo "1 file pushed"
+                ;;
               *) echo "OK" ;;
             esac
             ;;

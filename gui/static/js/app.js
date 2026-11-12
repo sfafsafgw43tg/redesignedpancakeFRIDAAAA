@@ -59,61 +59,147 @@ async function checkAdbStatus() {
     }
 }
 
+function currentDeviceSerial() {
+    // Prefer a running device, then any device that already knows its serial.
+    const ordered = [...devices].sort((a, b) => (b.running ? 1 : 0) - (a.running ? 1 : 0));
+    for (const device of ordered) {
+        if (device.serial) return device.serial;
+    }
+    return null;
+}
+
 async function checkFridaStatus() {
     try {
-        const response = await fetch('/api/status/frida');
+        const serial = currentDeviceSerial();
+        const url = serial
+            ? `/api/status/frida?serial=${encodeURIComponent(serial)}`
+            : '/api/status/frida';
+        const response = await fetch(url);
         const data = await response.json();
 
         const card = document.getElementById('fridaStatus');
         const indicator = card.querySelector('.status-indicator');
         const text = card.querySelector('.status-text');
         const installBtn = document.getElementById('fridaInstallBtn');
+        const fileBtn = document.getElementById('fridaFileBtn');
+
+        if (!data.serial) {
+            indicator.className = 'status-indicator disconnected';
+            text.textContent = 'No device (start an emulator)';
+            installBtn.style.display = 'block';
+            installBtn.textContent = 'Install';
+            fileBtn.style.display = 'block';
+            return;
+        }
 
         if (data.running) {
             indicator.className = 'status-indicator connected';
-            text.textContent = `Running (v${data.version})`;
+            text.textContent = `Running on ${data.serial} (v${data.version})`;
             installBtn.style.display = 'none';
+            fileBtn.style.display = 'none';
         } else if (data.installed) {
             indicator.className = 'status-indicator warning';
-            text.textContent = 'Installed (not running)';
+            text.textContent = `Installed on ${data.serial} (not running)`;
             installBtn.style.display = 'block';
             installBtn.textContent = 'Start Frida';
+            fileBtn.style.display = 'none';
         } else if (data.downloaded) {
             indicator.className = 'status-indicator warning';
             text.textContent = 'Downloaded (not installed)';
             installBtn.style.display = 'block';
             installBtn.textContent = 'Install Frida';
+            fileBtn.style.display = 'block';
         } else {
             indicator.className = 'status-indicator disconnected';
-            text.textContent = 'Not installed';
+            text.textContent = `Not installed (${data.serial})`;
             installBtn.style.display = 'block';
             installBtn.textContent = 'Download & Install';
+            fileBtn.style.display = 'block';
+        }
+
+        if (data.last_error) {
+            installBtn.title = data.last_error;
         }
     } catch (error) {
         console.error('Frida status check failed:', error);
     }
 }
 
-async function installFrida() {
+async function installFrida(localPath) {
     const btn = document.getElementById('fridaInstallBtn');
+    const fileBtn = document.getElementById('fridaFileBtn');
+    const previousLabel = btn.textContent;
     btn.disabled = true;
+    if (fileBtn) fileBtn.disabled = true;
     btn.textContent = 'Installing...';
 
+    const payload = {};
+    const serial = currentDeviceSerial();
+    if (serial) payload.serial = serial;
+    if (localPath) payload.local_path = localPath;
+
     try {
-        const response = await fetch('/api/frida/install', { method: 'POST' });
+        const response = await fetch('/api/frida/install', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
         const data = await response.json();
-
-        if (data.success) {
-            showToast('Frida server installed successfully!', 'success');
-        } else {
-            showToast(data.error || 'Installation failed', 'error');
+        if (!data.success) {
+            showToast(data.error || 'Installation failed to start', 'error');
+            btn.disabled = false;
+            btn.textContent = previousLabel;
+            return;
         }
+        showToast('Installing frida-server on the device…', 'info');
+        await pollFridaInstall();
     } catch (error) {
-        showToast('Installation failed', 'error');
+        showToast('Installation failed: ' + error, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = previousLabel;
+        if (fileBtn) fileBtn.disabled = false;
+        await checkFridaStatus();
     }
+}
 
-    btn.disabled = false;
-    await checkFridaStatus();
+async function pollFridaInstall() {
+    for (let attempt = 0; attempt < 240; attempt++) {  // ~6 minutes
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        let status;
+        try {
+            const response = await fetch('/api/frida/install/status');
+            status = await response.json();
+        } catch (error) {
+            continue;
+        }
+        if (status.running) continue;
+
+        if (status.ok) {
+            showToast('Frida server installed and running', 'success');
+        } else {
+            const message = status.error || 'Installation failed';
+            showToast(message, 'error');
+            console.error('frida install log:\n' + (status.log || ''));
+            if (status.diagnostics) console.error('frida diagnostics:', status.diagnostics);
+        }
+        return;
+    }
+    showToast('Frida installation is taking unusually long - check the terminal output', 'error');
+}
+
+async function installFridaFromFile() {
+    try {
+        const response = await fetch('/api/frida/pick-server', { method: 'POST' });
+        const data = await response.json();
+        if (!data.success || !data.path) {
+            showToast(data.error || 'No file selected', 'error');
+            return;
+        }
+        await installFrida(data.path);
+    } catch (error) {
+        showToast('Could not open the file picker', 'error');
+    }
 }
 
 async function applyAntidetect(name) {
@@ -133,7 +219,8 @@ async function applyAntidetect(name) {
             const indicator = card.querySelector('.status-indicator');
             const text = card.querySelector('.status-text');
             indicator.className = 'status-indicator connected';
-            text.textContent = 'Applied to ' + name;
+            text.textContent = 'Applied to ' + name + (data.serial ? ' (' + data.serial + ')' : '');
+            loadDevices();
         } else {
             showToast(data.error || 'Failed to apply antidetect', 'error');
         }
@@ -153,6 +240,7 @@ async function applyFridaHooks(name) {
 
         if (data.success) {
             showToast(data.message || 'Frida hooks applied!', 'success');
+            await checkFridaStatus();
         } else {
             showToast(data.error || 'Failed to apply hooks', 'error');
         }

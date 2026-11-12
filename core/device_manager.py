@@ -27,6 +27,7 @@ from datetime import datetime
 from pathlib import Path
 
 import config
+from core import adb
 from profiles.device_profiles import get_model_profile
 from profiles.profile_generator import generate_device_identity
 from spoof.system_props import generate_props_config
@@ -88,15 +89,30 @@ class DeviceManager:
                 continue
         return sorted(devices, key=lambda x: x.get("created", ""), reverse=True)
 
-    def get_device(self, name):
-        """Get device by name"""
+    def _load_device(self, name):
+        """Read a saved device without computing runtime state.
+
+        ``get_device`` adds a ``running`` flag, which itself needs the serial,
+        which needs the device - so internal helpers must use this raw loader
+        to avoid infinite recursion.
+        """
         device_file = self.devices_dir / f"{name}.json"
         if not device_file.exists():
             return None
-        with open(device_file, "r", encoding="utf-8") as f:
-            device = json.load(f)
-            device["running"] = self._is_running(name)
-            return device
+        try:
+            with open(device_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else None
+        except (OSError, ValueError):
+            return None
+
+    def get_device(self, name):
+        """Get device by name (including its ``running`` flag)"""
+        device = self._load_device(name)
+        if device is None:
+            return None
+        device["running"] = self._is_running(name)
+        return device
 
     def _save_device(self, device):
         device_file = self.devices_dir / f"{device['name']}.json"
@@ -564,6 +580,14 @@ tag.id=google_apis_playstore
             pid = device.get("pid") or (entry or {}).get("pid")
             if pid:
                 self._kill_pid(pid)
+            # Reap the child so it becomes neither a zombie nor reported as
+            # "still running" by a later os.kill(pid, 0) check.
+            proc = (entry or {}).get("process")
+            if proc is not None:
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
 
         self._cleanup_process_entry(name)
         return True
@@ -594,6 +618,57 @@ tag.id=google_apis_playstore
     # ------------------------------------------------------------------
     # Runtime helpers
     # ------------------------------------------------------------------
+    def get_device_serial(self, name, persist=True):
+        """Serial of the *running* emulator for this device (or None).
+
+        Resolution order:
+        1. the serial recorded at launch, if that device is still connected,
+        2. an emulator whose AVD name matches this device (covers emulators
+           started outside the app, or relaunched on a new port),
+        3. the only running emulator, but *only* when this device has no
+           recorded serial and no AVD name to match against.
+
+        A resolved serial that differs from the saved one is persisted so
+        later calls (spoofing, Frida, stop) hit the same instance.
+        """
+        device = self._load_device(name)
+        if not device:
+            return None
+
+        entry = self._running_processes.get(name, {})
+        saved = entry.get("serial") or device.get("serial")
+        avd_name = device.get("avd_name")
+
+        states = {d["serial"]: d["state"] for d in adb.devices()}
+        if saved and states.get(saved) in ("device", "offline", "unauthorized"):
+            return saved
+
+        matched = None
+        if avd_name:
+            for serial, state in states.items():
+                if state != "device" or not serial.startswith("emulator-"):
+                    continue
+                if adb.emu_avd_name(serial) == avd_name:
+                    matched = serial
+                    break
+
+        if matched is None and not saved and not avd_name:
+            # Legacy device files without an AVD name: accept the single
+            # running emulator rather than making the device unusable.
+            matched = adb.detect_serial()
+
+        if matched and matched != saved:
+            device["serial"] = matched
+            try:
+                self._save_device(device)
+            except Exception:
+                pass
+            print(f"[DeviceManager] Bound device '{name}' to running emulator "
+                  f"{matched} (AVD {avd_name}).")
+        # No connected emulator -> None. A saved serial for an emulator that
+        # isn't running must not be treated as a usable device.
+        return matched
+
     def _is_running(self, name):
         """Check if device is running (PID + ADB serial, survives restarts)."""
         entry = self._running_processes.get(name)
@@ -607,20 +682,21 @@ tag.id=google_apis_playstore
             self._running_processes.pop(name, None)
 
         # Check persisted serial via ADB (covers restarts / external launches)
-        device = None
-        device_file = self.devices_dir / f"{name}.json"
-        if device_file.exists():
-            try:
-                with open(device_file, "r", encoding="utf-8") as f:
-                    device = json.load(f)
-            except Exception:
-                device = None
+        device = self._load_device(name)
         serial = (device or {}).get("serial")
         if serial and self._adb_serial_present(serial):
             return True
         if device and self._pid_alive(device.get("pid")):
             return True
-        return False
+        # Emulator started outside the app (or before a restart): match it by
+        # AVD name so the dashboard shows the device as running. The resolved
+        # serial must actually be connected - a stale saved serial is not
+        # evidence that the device is up.
+        try:
+            resolved = self.get_device_serial(name, persist=True)
+        except Exception:
+            resolved = None
+        return bool(resolved and self._adb_serial_present(resolved))
 
     @staticmethod
     def _pid_alive(pid):
@@ -649,6 +725,12 @@ tag.id=google_apis_playstore
     def _cleanup_process_entry(self, name):
         entry = self._running_processes.pop(name, None)
         if entry:
+            proc = entry.get("process")
+            if proc is not None:
+                try:
+                    proc.wait(timeout=2)
+                except Exception:
+                    pass
             log_file = entry.get("log_file")
             if log_file:
                 try:

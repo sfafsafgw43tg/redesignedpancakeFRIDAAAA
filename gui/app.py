@@ -14,6 +14,7 @@ Launch-path fixes vs. original:
 - Added ``GET /api/sdk`` so the dashboard can explain a missing SDK.
 """
 import threading
+import time
 
 from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO, emit
@@ -27,6 +28,10 @@ _launch_lock = threading.Lock()
 # Background SDK install state (see POST /api/sdk/install).
 _sdk_install = {"running": False, "lines": [], "error": None, "ready": None}
 _sdk_install_lock = threading.Lock()
+
+# Background frida-server install state (see POST /api/frida/install).
+_frida_install = {"running": False, "lines": [], "error": None, "ok": None}
+_frida_install_lock = threading.Lock()
 
 
 def _set_state(name, **kwargs):
@@ -50,9 +55,11 @@ def create_app():
     manager = DeviceManager()
 
     def _device_serial(device):
-        """Serial recorded for a device, falling back to its saved value."""
-        entry = manager._running_processes.get(device["name"], {})
-        return entry.get("serial") or device.get("serial") or "emulator-5554"
+        """Serial of the *running* emulator for this device (None if not up)."""
+        try:
+            return manager.get_device_serial(device["name"])
+        except Exception:
+            return None
 
     @app.route("/")
     def index():
@@ -68,7 +75,7 @@ def create_app():
     @app.route("/api/devices", methods=["POST"])
     def create_device():
         """Create a new device"""
-        data = request.json or {}
+        data = request.get_json(silent=True) or {}
         try:
             device = manager.create_device(
                 model=data.get("model"),
@@ -104,7 +111,7 @@ def create_app():
     @app.route("/api/settings/sdk", methods=["POST"])
     def set_sdk_directory():
         """Save a new Android SDK directory and re-resolve all tool paths."""
-        data = request.json or {}
+        data = request.get_json(silent=True) or {}
         path = (data.get("path") or "").strip().strip('"')
         if not path:
             return jsonify({"success": False, "error": "No path given"}), 400
@@ -118,7 +125,7 @@ def create_app():
     def pick_sdk_directory():
         """Open a native folder picker on the machine running the app."""
         from gui.native_dialogs import pick_sdk_directory as pick
-        data = request.json or {}
+        data = request.get_json(silent=True) or {}
         initial = data.get("initial") or config.ANDROID_SDK_ROOT_STR or None
         try:
             path = pick(initialdir=initial)
@@ -133,7 +140,7 @@ def create_app():
         """Install platform-tools/emulator/system image in the background."""
         from core.sdk_setup import SdkSetup, SdkSetupError
 
-        data = request.json or {}
+        data = request.get_json(silent=True) or {}
         android_version = str(data.get("android_version", "14"))
         sdk_path = (data.get("path") or "").strip() or None
 
@@ -202,7 +209,7 @@ def create_app():
                     "message": "Launch already in progress",
                 })
 
-        data = request.json or {}
+        data = request.get_json(silent=True) or {}
         enable_frida = bool(data.get("frida", False))
         wait_for_boot = bool(data.get("wait", True))
         _set_state(name, state="starting", error=None)
@@ -333,91 +340,208 @@ def create_app():
 
     @app.route("/api/status/frida")
     def get_frida_status():
-        """Get Frida server status"""
-        from frida.frida_server_manager import FridaServerManager, FRIDA_SERVER_PATH
+        """Frida server status for the given (or auto-detected) device."""
+        from frida.frida_server_manager import FridaServerManager
 
-        serial = request.args.get("serial")
-        fm = FridaServerManager(serial) if serial else FridaServerManager()
-        return jsonify({
-            "downloaded": FRIDA_SERVER_PATH.exists(),
-            "installed": fm.is_installed() if serial else False,
-            "running": fm.is_running() if serial else False,
-            "version": "16.1.4"
-        })
+        serial = (request.args.get("serial") or "").strip()
+        if not serial:
+            devices = manager.list_devices()
+            running = [d for d in devices if d.get("running")]
+            for device in running + devices:
+                candidate = _device_serial(device)
+                if candidate:
+                    serial = candidate
+                    break
+        if not serial:
+            from core import adb
+
+            serial = adb.detect_serial()
+
+        fm = FridaServerManager(serial or None)
+        info = fm.diagnose()
+        info["success"] = True
+        return jsonify(info)
 
     @app.route("/api/frida/install", methods=["POST"])
     def install_frida():
-        """Download and install Frida server"""
+        """Download/push/start frida-server in the background."""
         from frida.frida_server_manager import FridaServerManager
 
-        data = request.json or {}
-        fm = FridaServerManager(data.get("serial")) if data.get("serial") else FridaServerManager()
+        data = request.get_json(silent=True) or {}
+        serial = (data.get("serial") or "").strip() or None
+        local_file = (data.get("local_path") or "").strip() or None
 
-        if not fm.local_server_path.exists():
-            if not fm.download_server():
-                return jsonify({"success": False, "error": "Download failed"})
+        if not serial:
+            devices = manager.list_devices()
+            for device in [d for d in devices if d.get("running")] + devices:
+                serial = _device_serial(device)
+                if serial:
+                    break
 
-        if not fm.push_to_device():
-            return jsonify({"success": False, "error": "Push to device failed"})
+        with _frida_install_lock:
+            if _frida_install["running"]:
+                return jsonify({"success": True, "state": "installing",
+                                "message": "Installation already running"})
+            _frida_install.update({"running": True, "lines": [], "error": None, "ok": None})
 
-        if not fm.start_server():
-            return jsonify({"success": False, "error": "Start server failed"})
+        def progress(message):
+            with _frida_install_lock:
+                _frida_install["lines"].append(str(message))
 
-        return jsonify({"success": True})
+        def run():
+            ok = False
+            message = ""
+            try:
+                fm = FridaServerManager(serial, progress=progress)
+                ok, message = fm.install(local_file=local_file)
+            except Exception as exc:  # never leave the UI spinning
+                ok = False
+                message = f"{type(exc).__name__}: {exc}"
+            finally:
+                with _frida_install_lock:
+                    _frida_install["ok"] = ok
+                    _frida_install["error"] = None if ok else (message or "Installation failed")
+                    _frida_install["running"] = False
+                socketio.emit("frida_install_done", {"ok": ok})
+
+        threading.Thread(target=run, daemon=True).start()
+        return jsonify({"success": True, "state": "installing", "serial": serial})
+
+    @app.route("/api/frida/install/status")
+    def frida_install_status():
+        """Progress of the background frida-server installation."""
+        from frida.frida_server_manager import FridaServerManager
+
+        serial = (request.args.get("serial") or "").strip() or None
+        with _frida_install_lock:
+            state = {
+                "running": _frida_install["running"],
+                "ok": _frida_install["ok"],
+                "error": _frida_install["error"],
+                "log": "\n".join(_frida_install["lines"][-200:]),
+            }
+        if not state["running"]:
+            state["diagnostics"] = FridaServerManager(serial).diagnose()
+        return jsonify(state)
+
+    @app.route("/api/frida/pick-server", methods=["POST"])
+    def pick_frida_server():
+        """Pick an already-downloaded frida-server binary from disk."""
+        from gui.native_dialogs import pick_file
+
+        try:
+            path = pick_file(title="Select the frida-server binary")
+        except Exception as exc:
+            return jsonify({"success": False, "error": str(exc)}), 500
+        if not path:
+            return jsonify({"success": False, "error": "No file selected."})
+        return jsonify({"success": True, "path": path})
 
     @app.route("/api/devices/<name>/apply-antidetect", methods=["POST"])
     def apply_antidetect(name):
-        """Apply antidetect spoofing to running device"""
+        """Apply system + hardware spoofing to the running emulator."""
+        from core import adb
+        from spoof.hardware_spoof import HardwareSpoofer
+        from spoof.system_spoof import SystemSpoofer
+
+        device = manager.get_device(name)
+        if not device:
+            return jsonify({"success": False, "error": "Device not found"}), 404
+
+        data = request.get_json(silent=True) or {}
+        wait_seconds = int(data.get("wait", 60))
+
+        serial = _device_serial(device)
+        if not serial:
+            return jsonify({
+                "success": False,
+                "error": (
+                    f"No running emulator matches '{name}' "
+                    f"(AVD {(manager._load_device(name) or {}).get('avd_name', '?')}). "
+                    f"adb reports: {adb.describe_devices(include_avd=True)}. "
+                    "Launch the device from the dashboard (or let START.bat do it)."
+                ),
+            }), 409
+
+        # Wait (bounded) for the emulator to finish booting when it is
+        # still starting, instead of failing immediately.
+        deadline = time.time() + wait_seconds
+        while time.time() < deadline:
+            state = adb.device_state(serial)
+            if state in ("offline", "unauthorized"):
+                break
+            if adb.boot_completed(serial):
+                break
+            time.sleep(2)
+        else:
+            state = adb.device_state(serial)
+
+        if not adb.boot_completed(serial):
+            return jsonify({
+                "success": False,
+                "serial": serial,
+                "error": (
+                    f"{serial} is not ready to spoof (state: {state or 'not connected'}). "
+                    + ("Accept the USB debugging prompt on the device."
+                       if state == "unauthorized" else
+                       "Wait for the boot to finish, then retry.")
+                ),
+            }), 409
+
+        identity = device.get("identity", {})
+        try:
+            SystemSpoofer(device_serial=serial).apply_all_spoofing(identity)
+            HardwareSpoofer(device_serial=serial).spoof_all(identity)
+        except Exception as exc:
+            return jsonify({"success": False, "serial": serial,
+                            "error": f"Spoofing failed on {serial}: {exc}"}), 500
+
+        return jsonify({
+            "success": True,
+            "serial": serial,
+            "message": f"Antidetect applied to {serial}! Restart Settings to see changes.",
+        })
+
+    @app.route("/api/devices/<name>/apply-frida-hooks", methods=["POST"])
+    def apply_frida_hooks(name):
+        """Inject Frida hooks into Settings on the running emulator."""
+        from core import adb
+        from core.hook_manager import HookManager
+
         device = manager.get_device(name)
         if not device:
             return jsonify({"success": False, "error": "Device not found"}), 404
 
         serial = _device_serial(device)
-        identity = device.get("identity", {})
-
-        from spoof.system_spoof import SystemSpoofer
-        spoofer = SystemSpoofer(device_serial=serial)
-
-        # wait_for_boot() is part of apply_all_spoofing(); check quickly first
-        # so we can return a useful message instead of hanging the request.
-        if not spoofer.wait_for_boot(timeout=30):
+        if not serial:
             return jsonify({
                 "success": False,
-                "error": f"Device {serial} is not ready. Launch it first and wait for boot.",
+                "error": (
+                    f"No running emulator matches '{name}'. "
+                    f"adb reports: {adb.describe_devices(include_avd=True)}."
+                ),
             }), 409
 
-        spoofer.apply_all_spoofing(identity)
-
-        from spoof.hardware_spoof import HardwareSpoofer
-        HardwareSpoofer(device_serial=serial).spoof_all(identity)
-
-        return jsonify({
-            "success": True,
-            "message": "Antidetect applied! Restart Settings app to see changes."
-        })
-
-    @app.route("/api/devices/<name>/apply-frida-hooks", methods=["POST"])
-    def apply_frida_hooks(name):
-        """Apply Frida hooks to running device"""
-        device = manager.get_device(name)
-        if not device:
-            return jsonify({"success": False, "error": "Device not found"}), 404
-
-        from core.hook_manager import HookManager
-        hm = HookManager(device_serial=_device_serial(device))
-
-        if not hm.start_frida_server():
+        hooks = HookManager(device_serial=serial)
+        if not hooks.start_frida_server():
             return jsonify({
                 "success": False,
-                "error": "Could not start Frida server (see device log / install frida-server).",
+                "serial": serial,
+                "error": (
+                    "Could not start frida-server on " + serial + ". "
+                    "Use 'Download & Install' in the Frida Server card - it now "
+                    "shows the exact error, and you can install from a local "
+                    "file if GitHub is blocked."
+                ),
             })
 
         identity = device.get("identity", {})
-        success = hm.inject_hooks("com.android.settings", identity)
+        success = hooks.inject_hooks("com.android.settings", identity)
 
         return jsonify({
             "success": success,
-            "message": "Frida hooks applied to Settings" if success else "Failed to apply hooks"
+            "serial": serial,
+            "message": "Frida hooks applied to Settings" if success else "Failed to apply hooks",
         })
 
     @socketio.on("connect")
