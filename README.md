@@ -77,14 +77,53 @@ Generated device identities are saved as JSON under `data/devices/` (gitignored)
 - **Root** on the emulator for `service call` IMEI spoofing and protected `ro.*` props. On user-build emulator images `su` does not exist, so the tool uses `adb root` and treats failures as non-fatal (Frida hooks cover the Java API).
 - **Frida server** on the device — `FridaServerManager` auto-downloads `frida-server-16.1.4` for the device's real ABI (`x86_64`, `arm64`, …), retries the download, pushes it to `/data/local/tmp/`, and starts it.
 
-### Install
+### ⚡ One-click start (Windows)
+Double-click **`START.bat`**. It will:
+
+1. find Python (uses `.venv` if present, then the `py` launcher, then `python`)
+2. install the Python dependencies (and `pywebview` for the desktop window)
+3. let you **pick your Android SDK folder** with a native folder dialog (or type/paste the path)
+4. install/repair the SDK components: licenses, `platform-tools`, `emulator`, and a system image — downloading Google's command-line tools first if `sdkmanager` is missing
+5. create a starter device so the dashboard isn't empty
+6. open the app in its **own desktop window** (no browser tab)
+
+Options pass straight through, e.g.:
+```bat
+START.bat --android 13
+START.bat --sdk "C:\Android\Sdk"
+START.bat --device "Samsung Galaxy S24"     :: create + boot it with spoofing/Frida
+START.bat --browser
+START.bat --no-device --skip-install        :: just deps + SDK check
+```
+
+Prefer an isolated environment? Create one first and the launcher uses it automatically:
+```bat
+python -m venv .venv
+START.bat
+```
+
+On Linux/macOS use `./start.sh` (same behaviour).
+
+### Install (manual)
 ```bash
 pip install -r requirements.txt
+pip install pywebview        # optional: native desktop window instead of a browser tab
 ```
+
+### 🗂️ Choosing the Android SDK folder
+The SDK folder is remembered in `data/settings.json` and takes priority over environment variables.
+
+- **GUI:** ⚙️ Settings → *Android SDK folder* → **Browse…** (native folder picker) → **Save**. The same panel has an **Install** button that installs `platform-tools`, `emulator` and the selected system image with live progress.
+- **CLI:** `python main.py set-sdk "C:\Android\Sdk"` (or `python main.py set-sdk --pick` for a folder dialog), then `python main.py setup` to install missing components.
+- **Env vars** still work as a fallback: `ANDROID_SDK_ROOT` / `ANDROID_HOME` / `ANDROID_SDK_HOME`.
+
+If a saved folder is deleted or isn't an SDK, it is ignored automatically so the app keeps working with env/default detection.
 
 ### Usage (Click CLI)
 ```bash
 python main.py check_sdk                                        # verify SDK/ADB
+python main.py set-sdk --pick                                   # choose the SDK folder
+python main.py setup -a 14                                      # install/repair SDK components
 python main.py models                                           # list 50+ phone models
 python main.py create -m "Samsung Galaxy S24" -a 14             # create device
 python main.py create -m "Samsung Galaxy S24" -a 14 -p socks5://127.0.0.1:1080
@@ -103,8 +142,17 @@ python apply_antidetect.py --device <name>                      # reuse saved id
 python update_devices.py                                        # re-apply props to AVDs
 ```
 
-### Web GUI
-`python main.py gui` starts a Flask + Flask-SocketIO dashboard at `http://127.0.0.1:8080` with REST endpoints under `/api/...` for device CRUD, launch, stop, and model listing.
+### Dashboard: desktop app or browser
+`python main.py gui` opens the dashboard in its **own desktop window** when `pywebview` is installed (falling back to a browser otherwise).
+
+```bash
+python main.py gui --desktop     # native window (default when pywebview is present)
+python main.py gui --browser     # browser tab, http://127.0.0.1:8080
+python main.py gui --host 0.0.0.0 --port 8080   # expose to your LAN
+python bootstrap.py              # one-shot: deps + SDK setup + desktop app
+```
+
+The dashboard is a Flask + Socket.IO app; the desktop shell serves it on a random loopback port inside a native window, so it works offline (the Socket.IO CDN script is optional and the UI degrades to polling). REST endpoints live under `/api/...` for device CRUD, launch, stop, model listing, SDK settings and component installation.
 
 Launching from the GUI is **asynchronous**: `POST /api/devices/<name>/launch` returns immediately and the dashboard polls `GET /api/devices/<name>/status`, which reports `starting` → `booting` → `running`/`error` plus the emulator log tail, so a slow boot or a hard failure is never hidden behind a hung request.
 
@@ -146,7 +194,9 @@ Environment knobs: `EMULATOR_RAM` (MB, default 4096), `EMULATOR_CORES` (default 
 ```
 android-emulator/
 ├── main.py                  # Click CLI entry
-├── config.py                # SDK paths, Android versions, defaults
+├── bootstrap.py             # one-shot setup: deps + SDK selection + launch
+├── START.bat / start.sh     # double-click launchers (Windows / Linux-macOS)
+├── config.py                # SDK paths (saved setting/env/auto), versions, defaults
 ├── apply_antidetect.py      # Standalone spoofing for running emulators
 ├── update_devices.py        # Re-apply props to existing AVDs
 ├── core/                    # device_manager, hook_manager
@@ -154,7 +204,8 @@ android-emulator/
 ├── profiles/                # identity + 50+ real device profiles
 ├── frida/                   # FridaHooks, server manager, JS scripts
 ├── anonymity/               # ProxyManager
-├── gui/                     # Flask + SocketIO dashboard
+├── gui/                     # Flask + SocketIO dashboard, desktop window, native dialogs
+├── core/sdk_setup.py        # installs platform-tools/emulator/system images
 └── tests/                   # launch-path tests that run against a fake SDK
 ```
 
@@ -162,5 +213,7 @@ android-emulator/
 ```bash
 python tests/integration_launch_test.py   # create/launch/stop/port allocation/props
 python tests/cli_gui_smoke_test.py         # CLI + GUI endpoints incl. async launch
+python tests/settings_desktop_test.py      # SDK selection/persistence, settings API, desktop mode
+python tests/console_spoof_test.py         # sensor/battery console auth + syntax
 ```
 Both build a stub SDK (`tests/fake_sdk.py`) with fake `emulator`/`adb`/`avdmanager`, so the real launch code path is exercised without downloading anything.

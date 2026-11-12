@@ -16,28 +16,134 @@ def cli():
 
 @cli.command()
 @click.option("--host", default=None, help="Host to bind (default: 127.0.0.1, or GUI_HOST env)")
-@click.option("--port", default=None, type=int, help="Port to bind (default: 8080)")
-@click.option("--no-browser", is_flag=True, help="Don't open browser automatically")
-def gui(host, port, no_browser):
-    """Start the web GUI dashboard"""
+@click.option("--port", default=None, type=int, help="Port to bind (default: 8080, or a free port in desktop mode)")
+@click.option("--no-browser", is_flag=True, help="Don't open a browser automatically")
+@click.option("--desktop", "desktop", flag_value=True, default=None,
+              help="Open a native desktop window (default when pywebview is installed)")
+@click.option("--browser", "desktop", flag_value=False,
+              help="Force the dashboard to open in a web browser")
+def gui(host, port, no_browser, desktop):
+    """Start the dashboard (native desktop window or browser)."""
     import os
     import config
     from gui.app import create_app, socketio
 
-    host = host or os.environ.get("GUI_HOST", config.GUI_HOST)
-    port = port or int(os.environ.get("GUI_PORT", config.GUI_PORT))
-
-    print(f"{Fore.CYAN}🤖 AntiDetect Emulator{Style.RESET_ALL}")
-    print(f"{Fore.GREEN}Starting GUI on http://{host}:{port}{Style.RESET_ALL}")
-
-    # Only auto-open a browser for loopback binds (0.0.0.0 isn't browsable).
-    if not no_browser and host not in ("0.0.0.0", "::"):
-        webbrowser.open(f"http://{host}:{port}")
+    use_desktop = desktop
+    if use_desktop is None:
+        # Auto: prefer a real app window, fall back to the browser.
+        from gui.native_dialogs import desktop_available
+        use_desktop = desktop_available()
 
     app = create_app()
-    # allow_unsafe_werkzeug avoids the "production" guard when binding
-    # beyond localhost; the app is single-user and local-first.
-    socketio.run(app, host=host, port=port, debug=False, allow_unsafe_werkzeug=True)
+
+    print(f"{Fore.CYAN}🤖 AntiDetect Emulator{Style.RESET_ALL}")
+
+    if use_desktop:
+        from gui.desktop import run_desktop
+        from gui.native_dialogs import desktop_available
+
+        if not desktop_available():
+            print(f"{Fore.YELLOW}Desktop mode needs pywebview (pip install pywebview); "
+                  f"falling back to the browser.{Style.RESET_ALL}")
+            use_desktop = False
+        else:
+            try:
+                print(f"{Fore.GREEN}Opening the desktop app window...{Style.RESET_ALL}")
+                run_desktop(
+                    app,
+                    socketio,
+                    host="127.0.0.1",
+                    port=port,
+                    width=1320,
+                    height=900,
+                )
+                return
+            except Exception as exc:
+                print(f"{Fore.YELLOW}Desktop window failed ({exc}); "
+                      f"falling back to the browser.{Style.RESET_ALL}")
+                use_desktop = False
+
+    if not use_desktop:
+        host = host or os.environ.get("GUI_HOST", config.GUI_HOST)
+        port = port or int(os.environ.get("GUI_PORT", config.GUI_PORT))
+        print(f"{Fore.GREEN}Starting GUI on http://{host}:{port}{Style.RESET_ALL}")
+
+        # Only auto-open a browser for loopback binds (0.0.0.0 isn't browsable).
+        if not no_browser and host not in ("0.0.0.0", "::"):
+            webbrowser.open(f"http://{host}:{port}")
+
+        # allow_unsafe_werkzeug avoids the "production" guard when binding
+        # beyond localhost; the app is single-user and local-first.
+        socketio.run(app, host=host, port=port, debug=False, allow_unsafe_werkzeug=True)
+
+
+@cli.command("set-sdk")
+@click.argument("path", required=False)
+@click.option("--pick", is_flag=True, help="Open a native folder picker")
+def set_sdk(path, pick):
+    """Select the Android SDK directory (saved for next runs)."""
+    import config
+
+    if pick or not path:
+        from gui.native_dialogs import pick_sdk_directory
+        picked = pick_sdk_directory(initialdir=config.ANDROID_SDK_ROOT_STR or None)
+        if not picked:
+            print(f"{Fore.RED}✗ No folder selected.{Style.RESET_ALL}")
+            raise SystemExit(1)
+        path = picked
+
+    try:
+        info = config.set_sdk_root(path)
+    except ValueError as exc:
+        print(f"{Fore.RED}✗ Invalid SDK directory: {exc}{Style.RESET_ALL}")
+        raise SystemExit(1)
+
+    print(f"{Fore.GREEN}✓ SDK directory saved: {info['sdk_root']}{Style.RESET_ALL}")
+    for label, key in (("emulator", "emulator_found"), ("adb", "adb_found"),
+                       ("avdmanager", "avdmanager_found"), ("sdkmanager", "sdkmanager_found")):
+        mark = f"{Fore.GREEN}✓{Style.RESET_ALL}" if info[key] else f"{Fore.RED}✗{Style.RESET_ALL}"
+        print(f"  {mark} {label}")
+    if not (info["emulator_found"] and info["adb_found"]):
+        print(f"{Fore.YELLOW}Some tools are missing. Run `python main.py setup` to install "
+              f"platform-tools/emulator, or pick the right SDK folder.{Style.RESET_ALL}")
+        raise SystemExit(1)
+
+
+@cli.command()
+@click.option("--android", "-a", default="14", help="Android version of the system image (9-15)")
+@click.option("--sdk", default=None, help="SDK directory to use/install into (default: current)")
+@click.option("--accept-licenses/--no-licenses", default=True, help="Auto-accept SDK licenses")
+def setup(android, sdk, accept_licenses):
+    """Install/repair the Android SDK so emulators can launch."""
+    from core.sdk_setup import SdkSetup, SdkSetupError
+    import config
+
+    if sdk:
+        try:
+            config.set_sdk_root(sdk)
+        except ValueError as exc:
+            print(f"{Fore.RED}✗ Invalid SDK directory: {exc}{Style.RESET_ALL}")
+            raise SystemExit(1)
+
+    if not config.ANDROID_SDK_ROOT:
+        print(f"{Fore.RED}✗ No Android SDK selected.{Style.RESET_ALL}")
+        print("  Choose one with: python main.py set-sdk \"C:\\path\\to\\Android\\Sdk\"")
+        raise SystemExit(1)
+
+    setup_tool = SdkSetup(progress=lambda msg: print(msg))
+    setup_tool.accept_licenses = setup_tool.accept_licenses if accept_licenses else (lambda: True)
+    try:
+        info = setup_tool.full_setup(android_version=str(android))
+    except SdkSetupError as exc:
+        print(f"{Fore.RED}✗ Setup failed: {exc}{Style.RESET_ALL}")
+        raise SystemExit(1)
+
+    if info["ready"]:
+        print(f"{Fore.GREEN}✓ SDK ready - create a device with: "
+              f"python main.py create -m \"Samsung Galaxy S24\"{Style.RESET_ALL}")
+    else:
+        print(f"{Fore.YELLOW}Missing: {'; '.join(info['problems'])}{Style.RESET_ALL}")
+        raise SystemExit(1)
 
 
 @cli.command("list")

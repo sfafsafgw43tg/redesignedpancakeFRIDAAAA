@@ -692,3 +692,51 @@ body {
         grid-template-columns: 1fr;
     }
 }
+
+/* Settings modal additions */
+.input-row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.input-row input[type="text"] {
+    flex: 1 1 320px;
+    min-width: 220px;
+}
+
+.hint {
+    display: block;
+    margin-top: 0.5rem;
+    color: var(--text-secondary, #8b93a7);
+    font-size: 0.82rem;
+    line-height: 1.45;
+    word-break: break-all;
+}
+
+.hint.ok {
+    color: #35d07f;
+}
+
+.hint.warn {
+    color: #ffb020;
+}
+
+.install-log {
+    margin-top: 0.75rem;
+    max-height: 220px;
+    overflow: auto;
+    padding: 0.75rem;
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.35);
+    color: #b8f5d0;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 0.78rem;
+    white-space: pre-wrap;
+    display: none;
+}
+
+.install-log.visible {
+    display: block;
+}

@@ -24,6 +24,10 @@ socketio = SocketIO()
 _launch_state = {}
 _launch_lock = threading.Lock()
 
+# Background SDK install state (see POST /api/sdk/install).
+_sdk_install = {"running": False, "lines": [], "error": None, "ready": None}
+_sdk_install_lock = threading.Lock()
+
 
 def _set_state(name, **kwargs):
     with _launch_lock:
@@ -80,6 +84,107 @@ def create_app():
     def get_sdk_status():
         """Android SDK diagnostics"""
         return jsonify(config.check_sdk())
+
+    # ------------------------------------------------------------------
+    # Settings: Android SDK selection + component installation
+    # ------------------------------------------------------------------
+    @app.route("/api/settings")
+    def get_settings():
+        """Current app settings and SDK diagnostics."""
+        from gui.native_dialogs import desktop_available, get_desktop_window
+        info = config.check_sdk()
+        info.update({
+            "settings": config.load_settings(),
+            "avd_home": str(config.AVD_HOME),
+            "desktop_available": desktop_available(),
+            "desktop_mode": get_desktop_window() is not None,
+        })
+        return jsonify(info)
+
+    @app.route("/api/settings/sdk", methods=["POST"])
+    def set_sdk_directory():
+        """Save a new Android SDK directory and re-resolve all tool paths."""
+        data = request.json or {}
+        path = (data.get("path") or "").strip().strip('"')
+        if not path:
+            return jsonify({"success": False, "error": "No path given"}), 400
+        try:
+            info = config.set_sdk_root(path)
+        except ValueError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
+        return jsonify({"success": True, "sdk": info, "message": info.get("message", "")})
+
+    @app.route("/api/settings/pick-sdk", methods=["POST"])
+    def pick_sdk_directory():
+        """Open a native folder picker on the machine running the app."""
+        from gui.native_dialogs import pick_sdk_directory as pick
+        data = request.json or {}
+        initial = data.get("initial") or config.ANDROID_SDK_ROOT_STR or None
+        try:
+            path = pick(initialdir=initial)
+        except Exception as exc:
+            return jsonify({"success": False, "error": str(exc)}), 500
+        if not path:
+            return jsonify({"success": False, "error": "No folder selected (or no GUI toolkit available)."}), 200
+        return jsonify({"success": True, "path": path})
+
+    @app.route("/api/sdk/install", methods=["POST"])
+    def install_sdk_components():
+        """Install platform-tools/emulator/system image in the background."""
+        from core.sdk_setup import SdkSetup, SdkSetupError
+
+        data = request.json or {}
+        android_version = str(data.get("android_version", "14"))
+        sdk_path = (data.get("path") or "").strip() or None
+
+        with _sdk_install_lock:
+            if _sdk_install["running"]:
+                return jsonify({"success": True, "state": "installing",
+                                "message": "Installation already running"})
+            _sdk_install.update({"running": True, "lines": [], "error": None, "ready": None})
+
+        def progress(message):
+            with _sdk_install_lock:
+                _sdk_install["lines"].append(str(message))
+
+        def run():
+            try:
+                if sdk_path:
+                    config.set_sdk_root(sdk_path)
+                setup_tool = SdkSetup(progress=progress)
+                info = setup_tool.full_setup(android_version=android_version)
+                with _sdk_install_lock:
+                    _sdk_install["ready"] = bool(info.get("ready"))
+                    if not info.get("ready"):
+                        _sdk_install["error"] = "Missing: " + "; ".join(info.get("problems", []))
+            except (SdkSetupError, ValueError) as exc:
+                with _sdk_install_lock:
+                    _sdk_install["error"] = str(exc)
+                    _sdk_install["ready"] = False
+            except Exception as exc:  # never leave the UI spinning
+                with _sdk_install_lock:
+                    _sdk_install["error"] = f"{type(exc).__name__}: {exc}"
+                    _sdk_install["ready"] = False
+            finally:
+                with _sdk_install_lock:
+                    _sdk_install["running"] = False
+                socketio.emit("sdk_install_done", {"ready": _sdk_install["ready"]})
+
+        threading.Thread(target=run, daemon=True).start()
+        return jsonify({"success": True, "state": "installing"})
+
+    @app.route("/api/sdk/install/status")
+    def sdk_install_status():
+        """Progress of the background SDK installation."""
+        with _sdk_install_lock:
+            state = {
+                "running": _sdk_install["running"],
+                "error": _sdk_install["error"],
+                "ready": _sdk_install["ready"],
+                "log": "\n".join(_sdk_install["lines"][-200:]),
+            }
+        state["sdk"] = config.check_sdk()
+        return jsonify(state)
 
     @app.route("/api/devices/<name>/launch", methods=["POST"])
     def launch_device(name):

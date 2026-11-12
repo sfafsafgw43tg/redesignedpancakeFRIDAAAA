@@ -161,6 +161,45 @@
             </div>
         </div>
 
+        <!-- Settings Modal -->
+        <div class="modal" id="settingsModal">
+            <div class="modal-content modal-large">
+                <div class="modal-header">
+                    <h3>⚙️ Settings</h3>
+                    <button class="btn-close" onclick="hideSettings()">×</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>Android SDK folder</label>
+                        <div class="input-row">
+                            <input type="text" id="sdkPathInput" placeholder="e.g. C:\\Users\\you\\AppData\\Local\\Android\\Sdk">
+                            <button class="btn btn-secondary" onclick="browseSdkFolder()">Browse…</button>
+                            <button class="btn btn-primary" onclick="saveSdkPath()">Save</button>
+                        </div>
+                        <small class="hint" id="sdkPathHint">Checking…</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Install / repair SDK components</label>
+                        <div class="input-row">
+                            <select id="sdkInstallVersion"></select>
+                            <button class="btn btn-primary" onclick="installSdkComponents()" id="sdkInstallBtn">
+                                Install
+                            </button>
+                        </div>
+                        <small class="hint">Installs platform-tools, emulator and a system image with
+                            <code>sdkmanager</code> (downloads command-line tools if missing).</small>
+                        <pre class="install-log" id="sdkInstallLog"></pre>
+                    </div>
+
+                    <div class="form-group">
+                        <label>App mode</label>
+                        <small class="hint" id="desktopHint">Checking…</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Toast Notifications -->
         <div class="toast-container" id="toastContainer"></div>
     </div>

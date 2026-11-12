@@ -2,8 +2,11 @@
  * AntiDetect Emulator - Frontend JavaScript
  */
 
-// Socket.IO connection
-const socket = io();
+// Socket.IO connection (the CDN may be unreachable in an offline desktop
+// app; the UI also polls, so a no-op stub keeps everything working).
+const socket = (typeof io !== 'undefined')
+    ? io()
+    : { on: () => {}, emit: () => {} };
 
 // State
 let devices = [];
@@ -464,8 +467,181 @@ function hideDetailsModal() {
     document.getElementById('detailsModal').classList.remove('active');
 }
 
-function showSettings() {
-    showToast('Settings coming soon!', 'info');
+let sdkInstallPoller = null;
+
+async function showSettings() {
+    document.getElementById('settingsModal').classList.add('active');
+    await loadSettings();
+}
+
+function hideSettings() {
+    document.getElementById('settingsModal').classList.remove('active');
+    if (sdkInstallPoller) {
+        clearInterval(sdkInstallPoller);
+        sdkInstallPoller = null;
+    }
+}
+
+async function loadSettings() {
+    const hint = document.getElementById('sdkPathHint');
+    try {
+        const response = await fetch('/api/settings');
+        const data = await response.json();
+
+        const input = document.getElementById('sdkPathInput');
+        if (data.sdk_root) {
+            input.value = data.sdk_root;
+        }
+
+        const missing = [];
+        if (!data.emulator_found) missing.push('emulator');
+        if (!data.adb_found) missing.push('adb');
+        if (!data.avdmanager_found) missing.push('avdmanager');
+
+        if (missing.length === 0) {
+            hint.className = 'hint ok';
+            hint.textContent = `SDK ready (${data.sdk_root_source}). AVDs: ${(data.avds || []).length}`;
+        } else if (data.sdk_root) {
+            hint.className = 'hint warn';
+            hint.textContent = `SDK found (${data.sdk_root_source}) but missing: ${missing.join(', ')}. Use Install below.`;
+        } else {
+            hint.className = 'hint warn';
+            hint.textContent = 'No SDK selected yet. Click Browse… and pick your Android SDK folder.';
+        }
+
+        const versionSelect = document.getElementById('sdkInstallVersion');
+        if (versionSelect.options.length === 0) {
+            const vres = await fetch('/api/android-versions');
+            const versions = await vres.json();
+            versionSelect.innerHTML = '';
+            for (const v of versions) {
+                const option = document.createElement('option');
+                option.value = v.version;
+                option.textContent = `Android ${v.version} (API ${v.api})${v.installed ? ' ✓ installed' : ''}`;
+                if (v.installed) option.selected = true;
+                versionSelect.appendChild(option);
+            }
+        }
+
+        const desktopHint = document.getElementById('desktopHint');
+        desktopHint.className = 'hint';
+        if (data.desktop_mode) {
+            desktopHint.textContent = 'Running as a desktop app window.';
+        } else if (data.desktop_available) {
+            desktopHint.textContent = 'Desktop window available — start with "python main.py gui --desktop" (or START.bat on Windows).';
+        } else {
+            desktopHint.textContent = 'Browser mode. For a standalone app window run "pip install pywebview" then "python main.py gui --desktop" (START.bat does it for you on Windows).';
+        }
+    } catch (error) {
+        hint.className = 'hint warn';
+        hint.textContent = 'Could not load settings: ' + error;
+    }
+}
+
+async function browseSdkFolder() {
+    showToast('Opening folder picker…', 'info');
+    try {
+        const response = await fetch('/api/settings/pick-sdk', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        });
+        const data = await response.json();
+        if (data.success && data.path) {
+            document.getElementById('sdkPathInput').value = data.path;
+            showToast('Folder selected - click Save', 'success');
+        } else {
+            showToast(data.error || 'No folder selected', 'error');
+        }
+    } catch (error) {
+        showToast('Could not open the folder picker', 'error');
+    }
+}
+
+async function saveSdkPath() {
+    const path = document.getElementById('sdkPathInput').value.trim();
+    if (!path) {
+        showToast('Enter or browse to your Android SDK folder', 'error');
+        return;
+    }
+    try {
+        const response = await fetch('/api/settings/sdk', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path })
+        });
+        const data = await response.json();
+        if (data.success) {
+            showToast('SDK folder saved', 'success');
+            await loadSettings();
+            await refreshStatus();
+            loadDevices();
+        } else {
+            showToast(data.error || 'Invalid SDK folder', 'error');
+        }
+    } catch (error) {
+        showToast('Failed to save the SDK folder', 'error');
+    }
+}
+
+async function installSdkComponents() {
+    const versionSelect = document.getElementById('sdkInstallVersion');
+    const log = document.getElementById('sdkInstallLog');
+    const button = document.getElementById('sdkInstallBtn');
+    const path = document.getElementById('sdkPathInput').value.trim();
+
+    if (!path) {
+        showToast('Pick your Android SDK folder first', 'error');
+        return;
+    }
+
+    log.classList.add('visible');
+    log.textContent = 'Starting installation…';
+    button.disabled = true;
+
+    try {
+        const response = await fetch('/api/sdk/install', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ android_version: versionSelect.value, path })
+        });
+        const data = await response.json();
+        if (!data.success) {
+            showToast(data.error || 'Installation failed to start', 'error');
+            button.disabled = false;
+            return;
+        }
+    } catch (error) {
+        showToast('Installation failed to start', 'error');
+        button.disabled = false;
+        return;
+    }
+
+    if (sdkInstallPoller) clearInterval(sdkInstallPoller);
+    sdkInstallPoller = setInterval(async () => {
+        try {
+            const response = await fetch('/api/sdk/install/status');
+            const status = await response.json();
+            log.textContent = status.log || 'Working…';
+            log.scrollTop = log.scrollHeight;
+            if (!status.running) {
+                clearInterval(sdkInstallPoller);
+                sdkInstallPoller = null;
+                button.disabled = false;
+                if (status.error) {
+                    showToast('Install finished with errors', 'error');
+                } else {
+                    showToast('SDK components installed', 'success');
+                }
+                await loadSettings();
+                await refreshStatus();
+            }
+        } catch (error) {
+            clearInterval(sdkInstallPoller);
+            sdkInstallPoller = null;
+            button.disabled = false;
+        }
+    }, 1500);
 }
 
 function showHelp() {

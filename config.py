@@ -5,8 +5,18 @@ Cross-platform SDK detection. Previously this file hardcoded
 ``C:\\Users\\admin\\AppData\\Local\\Android\\Sdk`` with ``.exe``/``.bat``
 binaries, so the emulator could never launch on any other machine
 (or even on Windows under a different username). SDK paths are now
-resolved from environment variables, OS defaults, and ``PATH``.
+resolved from (in priority order):
+
+1. the SDK directory chosen in the GUI/CLI, stored in ``data/settings.json``
+2. ``ANDROID_SDK_ROOT`` / ``ANDROID_HOME`` / ``ANDROID_SDK_HOME``
+3. OS default SDK locations
+4. the directory containing ``emulator``/``adb`` on ``PATH``
+
+``set_sdk_root()`` lets the app change the SDK at runtime (GUI settings
+panel, ``python main.py set-sdk <dir>``, first-run bootstrap) and persists
+the choice.
 """
+import json
 import os
 import shutil
 import sys
@@ -29,6 +39,66 @@ for _d in (DATA_DIR, PROFILES_DIR, SAVED_DEVICES_DIR, LOGS_DIR):
 IS_WINDOWS = sys.platform.startswith("win")
 EXE_SUFFIX = ".exe" if IS_WINDOWS else ""
 BAT_SUFFIX = ".bat" if IS_WINDOWS else ""
+
+SETTINGS_FILE = DATA_DIR / "settings.json"
+
+
+def load_settings():
+    """Read ``data/settings.json`` (empty dict when absent/corrupt)."""
+    try:
+        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_settings(updates):
+    """Merge ``updates`` into ``data/settings.json`` and return the result."""
+    settings = load_settings()
+    settings.update(updates)
+    try:
+        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SETTINGS_FILE.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    except OSError as exc:  # read-only install dir: keep running unpersisted
+        print(f"[config] Warning: could not save settings ({exc})")
+    return settings
+
+
+def get_saved_sdk_root():
+    """SDK directory explicitly chosen by the user (or None).
+
+    A stale/invalid saved path is ignored so it can't lock the app out of a
+    perfectly good SDK found via env vars or the default locations.
+    """
+    value = str(load_settings().get("sdk_root", "")).strip()
+    if not value:
+        return None
+    path = Path(value).expanduser()
+    if not path.is_dir():
+        return None
+    looks_like_sdk = any(
+        (path / marker).exists()
+        for marker in ("emulator", "platform-tools", "cmdline-tools", "system-images")
+    )
+    return path if looks_like_sdk else None
+
+
+def sdk_root_source():
+    """Human-readable explanation of where the SDK path came from."""
+    saved_raw = str(load_settings().get("sdk_root", "")).strip()
+    if saved_raw and get_saved_sdk_root() is None:
+        return f"saved setting ignored (not found: {saved_raw})"
+    if get_saved_sdk_root() is not None:
+        return "saved setting"
+    for env_name in ("ANDROID_SDK_ROOT", "ANDROID_HOME", "ANDROID_SDK_HOME"):
+        if os.environ.get(env_name, "").strip():
+            return f"environment variable {env_name}"
+    for candidate in _default_sdk_candidates():
+        if (candidate / "emulator").exists() or (candidate / "platform-tools").exists():
+            return "auto-detected"
+    if shutil.which("emulator") or shutil.which("emulator.exe"):
+        return "found on PATH"
+    return "not configured"
 
 
 def _default_sdk_candidates():
@@ -55,6 +125,7 @@ def detect_sdk_root():
     """Resolve the Android SDK root.
 
     Priority:
+    0. SDK selected in the app and saved in ``data/settings.json``
     1. ``ANDROID_SDK_ROOT`` env var
     2. ``ANDROID_HOME`` env var
     3. ``ANDROID_SDK_HOME`` env var
@@ -62,6 +133,10 @@ def detect_sdk_root():
     5. Directory containing ``emulator``/``adb`` found on ``PATH``
     6. ``None`` (SDK not found)
     """
+    saved = get_saved_sdk_root()
+    if saved is not None:
+        return saved
+
     for env_name in ("ANDROID_SDK_ROOT", "ANDROID_HOME", "ANDROID_SDK_HOME"):
         value = os.environ.get(env_name, "").strip()
         if value:
@@ -104,34 +179,108 @@ def _find_binary(sdk_root, relative_parts, names):
     return names[0]
 
 
-ANDROID_SDK_ROOT = detect_sdk_root()
-ANDROID_SDK_ROOT_STR = str(ANDROID_SDK_ROOT) if ANDROID_SDK_ROOT else ""
+ANDROID_SDK_ROOT = None
+ANDROID_SDK_ROOT_STR = ""
+EMULATOR_PATH = "emulator"
+ADB_PATH = "adb"
+AVDMANAGER_PATH = "avdmanager"
+SDKMANAGER_PATH = "sdkmanager"
 
-EMULATOR_PATH = _find_binary(
-    ANDROID_SDK_ROOT,
-    ("emulator", f"emulator{EXE_SUFFIX}"),
-    [f"emulator{EXE_SUFFIX}", "emulator"],
-)
-ADB_PATH = _find_binary(
-    ANDROID_SDK_ROOT,
-    ("platform-tools", f"adb{EXE_SUFFIX}"),
-    [f"adb{EXE_SUFFIX}", "adb"],
-)
-AVDMANAGER_PATH = _find_binary(
-    ANDROID_SDK_ROOT,
-    ("cmdline-tools", "latest", "bin", f"avdmanager{BAT_SUFFIX}"),
-    [f"avdmanager{BAT_SUFFIX}", "avdmanager"],
-)
-SDKMANAGER_PATH = _find_binary(
-    ANDROID_SDK_ROOT,
-    ("cmdline-tools", "latest", "bin", f"sdkmanager{BAT_SUFFIX}"),
-    [f"sdkmanager{BAT_SUFFIX}", "sdkmanager"],
-)
+
+def _resolve_sdk_tools(sdk_root):
+    """Compute tool paths for ``sdk_root`` without touching module state."""
+    return {
+        "emulator": _find_binary(
+            sdk_root, ("emulator", f"emulator{EXE_SUFFIX}"), [f"emulator{EXE_SUFFIX}", "emulator"]
+        ),
+        "adb": _find_binary(
+            sdk_root,
+            ("platform-tools", f"adb{EXE_SUFFIX}"),
+            [f"adb{EXE_SUFFIX}", "adb"],
+        ),
+        "avdmanager": _find_binary(
+            sdk_root,
+            ("cmdline-tools", "latest", "bin", f"avdmanager{BAT_SUFFIX}"),
+            [f"avdmanager{BAT_SUFFIX}", "avdmanager"],
+        ),
+        "sdkmanager": _find_binary(
+            sdk_root,
+            ("cmdline-tools", "latest", "bin", f"sdkmanager{BAT_SUFFIX}"),
+            [f"sdkmanager{BAT_SUFFIX}", "sdkmanager"],
+        ),
+    }
+
+
+def apply_sdk_root(sdk_root):
+    """Point the module globals at ``sdk_root`` (None = tool from PATH)."""
+    global ANDROID_SDK_ROOT, ANDROID_SDK_ROOT_STR
+    global EMULATOR_PATH, ADB_PATH, AVDMANAGER_PATH, SDKMANAGER_PATH
+
+    ANDROID_SDK_ROOT = Path(sdk_root).expanduser() if sdk_root else None
+    ANDROID_SDK_ROOT_STR = str(ANDROID_SDK_ROOT) if ANDROID_SDK_ROOT else ""
+
+    tools = _resolve_sdk_tools(ANDROID_SDK_ROOT)
+    EMULATOR_PATH = tools["emulator"]
+    ADB_PATH = tools["adb"]
+    AVDMANAGER_PATH = tools["avdmanager"]
+    SDKMANAGER_PATH = tools["sdkmanager"]
+    return check_sdk()
+
+
+def validate_sdk_dir(path):
+    """Return ``(ok, message)`` describing whether ``path`` is an Android SDK."""
+    if not path:
+        return False, "No directory given."
+    p = Path(str(path)).expanduser()
+    if not p.exists():
+        return False, f"Directory does not exist: {p}"
+    if not p.is_dir():
+        return False, f"Not a directory: {p}"
+    markers = [
+        p / "emulator",
+        p / "platform-tools",
+        p / "cmdline-tools",
+        p / "system-images",
+        p / "licenses",
+    ]
+    found = [m.name for m in markers if m.exists()]
+    if not found:
+        return False, (
+            f"{p} does not look like an Android SDK (no emulator/, platform-tools/, "
+            "cmdline-tools/ or system-images/ inside)."
+        )
+    return True, f"Found {', '.join(found)}"
+
+
+def set_sdk_root(path, persist=True):
+    """Select an SDK directory at runtime (and optionally save it)."""
+    ok, message = validate_sdk_dir(path)
+    if not ok:
+        raise ValueError(message)
+    settings = save_settings({"sdk_root": str(Path(str(path)).expanduser())}) if persist else {}
+    info = apply_sdk_root(path)
+    info["message"] = message
+    info["persisted"] = bool(persist)
+    info["source"] = sdk_root_source()
+    return info
+
+
+# Initial resolution at import time (later changed via set_sdk_root()).
+_resolved_root = detect_sdk_root()
+_sdk_tools = _resolve_sdk_tools(_resolved_root)
+ANDROID_SDK_ROOT = _resolved_root
+ANDROID_SDK_ROOT_STR = str(_resolved_root) if _resolved_root else ""
+EMULATOR_PATH = _sdk_tools["emulator"]
+ADB_PATH = _sdk_tools["adb"]
+AVDMANAGER_PATH = _sdk_tools["avdmanager"]
+SDKMANAGER_PATH = _sdk_tools["sdkmanager"]
 
 # AVD home: where emulator looks for *.ini / *.avd
 _avd_home_env = os.environ.get("ANDROID_AVD_HOME", "").strip()
 if _avd_home_env:
     AVD_HOME = Path(_avd_home_env).expanduser()
+elif (load_settings().get("avd_home") or "").strip():
+    AVD_HOME = Path(str(load_settings()["avd_home"])).expanduser()
 else:
     AVD_HOME = Path.home() / ".android" / "avd"
 
@@ -211,6 +360,9 @@ def check_sdk():
     return {
         "sdk_root": ANDROID_SDK_ROOT_STR or None,
         "sdk_root_found": ANDROID_SDK_ROOT is not None,
+        "sdk_root_source": sdk_root_source(),
+        "settings_file": str(SETTINGS_FILE),
+        "sdkmanager_installed": sdkmanager_ok,
         "emulator_path": EMULATOR_PATH,
         "emulator_found": emulator_ok,
         "adb_path": ADB_PATH,
