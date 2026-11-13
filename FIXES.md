@@ -274,3 +274,25 @@ exactly what you want. Root verification: `adb shell id` = `uid=0(root)`
 - Bare `except:` removed in proxy manager.
 
 All 11 test suites pass.
+
+---
+
+## Round 7: polish pass ("make it perfect")
+
+- **Cameras/sensors/GPS protected from the emulator-file hiding**: the
+  runtime rename of `/dev/qemu_pipe` and `/dev/socket/qemud` could kill
+  the camera HAL (virtual scene / webcam pass-through) and sensor/GPS
+  pipes on first use after spoofing. Those nodes stay; apps' *presence*
+  checks for them were already spoofed by the `File.exists()` hook in
+  `frida_toolkit/scripts/anti_detect.js` (regression-guarded by the new
+  `tests/antidetect_static_test.py`).
+- **frida_inject.log no longer grows forever**: each injection opens it
+  fresh ("wb"), so the tail printed on failures is actually the current
+  error, and disk doesn't fill across sessions.
+- **No more `/favicon.ico` 404 spam** in the console (inline SVG icon).
+- All three Frida scripts (`anti_detect.js`, `native_hooks.js`,
+  `safetynet_bypass.js`) are syntax-checked in CI (`node --check`).
+- Static regression suite added: `tests/antidetect_static_test.py` pins
+  the adb-safety and qemu-pipe rules above.
+
+All 12 test suites pass.

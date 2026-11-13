@@ -356,6 +356,10 @@ var config = deviceIdentity;
             script_file.parent.mkdir(parents=True, exist_ok=True)
             script_file.write_text(script_content, encoding="utf-8")
 
+        # "wb": each injection owns the log - endless "ab" appends used to
+        # grow the file forever and made the last-error tail meaningless.
+        log_mode = "wb"
+
         try:
             frida_bin = "frida.exe" if os.name == "nt" else "frida"
             if shutil_which(frida_bin) is None:
@@ -364,7 +368,7 @@ var config = deviceIdentity;
             cmd = [frida_bin, *self._cli_device_flag(),
                    "-l", str(script_file), "-f", package_name,
                    *self._cli_resume_flag(frida_bin)]
-            log_file = open(log_path, "ab", buffering=0)
+            log_file = open(log_path, log_mode, buffering=0)
             process = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
             # Fail fast: if the frida CLI dies immediately (device
             # unreachable, script error), report it instead of claiming a

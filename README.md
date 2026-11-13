@@ -297,6 +297,7 @@ python tests/camera_test.py                # webcam0 selection, launch flags, ed
 python tests/settings_camera_test.py       # Settings camera defaults endpoint, create fallback, pid probe
 python tests/auto_root_test.py             # automatic adb root after boot, opt-outs, settings toggle
 python tests/image_install_test.py         # strict system-image detection + auto-install for any version
+python tests/antidetect_static_test.py     # adb-safety + qemu-pipe regression guards
 python tests/integration_launch_test.py    # create/launch/stop, image variants, rootable flags
 python tests/adb_recovery_test.py          # offline device healing, adb root, repair endpoint
 ```

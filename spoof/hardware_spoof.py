@@ -114,12 +114,18 @@ class HardwareSpoofer:
             self._shell_root(cmd)
 
     def hide_emulator_files(self):
-        """Hide common emulator indicator files (best-effort, needs root)"""
+        """Hide common emulator indicator files (best-effort, needs root).
+
+        Deliberately NOT renamed: ``/dev/qemu_pipe`` and
+        ``/dev/socket/qemud``. The emulator's camera HAL (virtual scene /
+        webcam pass-through), sensor stack and GPS all open the qemu pipe
+        lazily on first use - renaming the node breaks exactly those
+        features while their Java-side presence checks are already spoofed
+        by the ``File.exists()`` hook in frida_toolkit/scripts/anti_detect.js.
+        """
         files_to_hide = [
             "/system/bin/qemu-props",
             "/system/lib/libc_malloc_debug_qemu.so",
-            "/dev/socket/qemud",
-            "/dev/qemu_pipe",
         ]
         for file_path in files_to_hide:
             self._shell_root(f"mv {file_path} {file_path}.bak 2>/dev/null")
