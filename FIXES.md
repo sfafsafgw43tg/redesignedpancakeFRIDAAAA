@@ -1,102 +1,73 @@
-# Fix: "Emulator starts but Spoof / Hooks don't work"
+# Merge notes: best of both branches + camera settings
 
-## The symptom
+This branch merges `arena/3cd70718-redesignedpancakefridaaaa` (the advanced
+line: START.bat launcher, SDK picker/installer, desktop mode, adb recovery,
+image variants, per-device cameras, test suite) with the fixes from
+`arena/11908164-redesignedpancakefridaaaa`. The merge takes the advanced tree
+as the base and ports over everything it was still missing.
 
-Dashboard showed the device as **Running**, but clicking **🎭 Spoof** or **🔧 Hooks**
-failed with:
+## What was wrong (your screenshot)
 
-> No running emulator matches 'first_device' (AVD `antidetect_first_device`).
-> adb reports: no devices connected (adb devices is empty).
+> No running emulator matches 'first_device' … adb reports: no devices
+> connected (adb devices is empty).
 
-## Root causes found (all fixed)
+The advanced branch already fixed most of the chain (real serial resolution,
+boot waits, launch logging, adb repair). This merge adds the remaining fixes:
 
-### 1. 🔥 The running-check itself killed the emulator (Windows)
+### 1. 🔥 `_pid_alive` no longer kills the emulator on Windows
+`_pid_alive()` probed with `os.kill(pid, 0)`. On Windows `os.kill` calls
+`TerminateProcess()` for any signal except CTRL_C/CTRL_BREAK — so the probe
+itself **terminates the emulator** (the dashboard says "Running" while adb
+correctly reports an empty device list). A stale pid could even belong to an
+unrelated process, which would be killed too.
+→ `_pid_alive` now uses `tasklist /FI "PID eq …"` on Windows and signal 0
+only on POSIX. Regression test: `tests/settings_camera_test.py` starts a
+helper process and proves it survives the probe.
 
-`DeviceManager._is_running()` used `os.kill(pid, 0)` to probe whether the
-emulator process is alive. On Linux/macOS signal 0 is a harmless probe —
-**on Windows, `os.kill()` calls `TerminateProcess()` for any signal other
-than `CTRL_C_EVENT` / `CTRL_BREAK_EVENT`**.
+### 2. Frida injection targets the resolved serial, not "any USB device"
+`HookManager._run_script` used `frida.get_usb_device()` / CLI `frida -U`,
+which hooks whatever the first adb device happens to be.
+→ The Python API opens `frida.get_device(<serial>)` (e.g. `emulator-5556`)
+and the CLI gets `-D <serial>`; only an unknown serial falls back to `-U`.
+CLI injection now also fails fast when `frida` exits immediately instead of
+reporting success for a dead process.
 
-So the first device-list refresh right after Launch **terminated the
-emulator process with exit code 0**. The dashboard then reported "Running"
-(because the kill call "succeeded"), while `adb devices` was empty →
-Spoof/Hooks failed with exactly the error above.
+### 3. Windows-safe termination
+`stop_session` used `os.kill(pid, 9)` → replaced by `taskkill /F` on Windows
+/ SIGKILL on POSIX via `_terminate_pid`.
 
-**Fix:** new `pid_alive()` helper — `tasklist /FI "PID eq …"` on Windows,
-`os.kill(pid, 0)` only on POSIX. Stop actions use `taskkill /T /F`.
+### 4. Error toasts stay readable + click-to-dismiss (12 s for errors).
 
-### 2. `emulator-5554` was hardcoded everywhere
+## New: choosing a camera in ⚙️ Settings (webcam0 included)
 
-`stop_device`, system spoofing, hardware spoofing, `HookManager`, and both
-GUI endpoints assumed the emulator is always `emulator-5554`. Whenever the
-emulator occupied another console port (5556, 5558, …), every adb command
-targeted a nonexistent device.
+The project already had per-device cameras (New Device dialog, 📋 Details,
+`set-camera` CLI). Now there is a **global default camera picker in Settings**:
 
-**Fix:** dynamic serial resolution — `adb devices` + `adb -s <serial> emu avd name`
-matched against the device's `avd_name` (with a single-emulator fallback),
-cached per device. Launch, Stop, Spoof, Hooks and Frida install all use the
-**resolved** serial.
+- **⚙️ Settings → 📷 Default cameras (used for new devices)** — front/back
+  fields with `emulated`, `virtualscene`, `webcam0`, `webcam1`, …, `none`,
+  plus a **"Use webcam0 for both"** shortcut and **Save defaults**.
+- Saved to `data/settings.json` via the new `POST /api/settings/cameras`
+  endpoint (server-side validated with `validate_camera_mode`).
+- The **New Device** dialog is pre-filled with these defaults; empty fields
+  on the server also fall back to them (explicit form values win).
+- Existing devices can still be switched to `webcam0` in their 📋 Details
+  (writes `hw.camera.front/back` to the AVD `config.ini`; restart applies).
 
-### 3. Spoof gave up after 10 seconds
+## Tests
 
-The `apply-antidetect` endpoint used `wait_for_boot(timeout=10)`; a real boot
-takes 30–180 s, so clicking Spoof while booting always failed.
+All existing suites pass unchanged, plus the new
+`tests/settings_camera_test.py` (16 checks):
 
-**Fix:** both endpoints now wait for the serial (up to 90 s) and then for
-`sys.boot_completed` (up to 180 s) and return a clear, actionable error
-otherwise.
+```
+python tests/integration_launch_test.py   # launch path, ports, props
+python tests/cli_gui_smoke_test.py        # CLI + GUI endpoints
+python tests/settings_desktop_test.py     # SDK settings, desktop mode
+python tests/console_spoof_test.py        # sensor/battery console
+python tests/frida_serial_test.py         # serial binding, frida install
+python tests/camera_test.py               # per-device webcam0 selection
+python tests/settings_camera_test.py      # NEW: settings defaults + pid probe
+python tests/adb_recovery_test.py         # offline-device healing
+```
 
-### 4. Hooks used `frida -U`
-
-`-U` grabs "the first USB device", which breaks with 0 or 2+ devices.
-
-**Fix:** `frida -D <resolved-serial>`, frida CLI located via `shutil.which`,
-and early failure detection (if frida exits within 2 s, its stderr is
-reported instead of claiming success).
-
-### 5. Frida server didn't start without `su`
-
-**Fix:** `adb root` + `adb wait-for-device` before starting `frida-server`,
-with a `--no-su` fallback (plain shell is already root after `adb root`).
-
-### 6. State lived only in RAM
-
-After a GUI restart (or an emulator launched outside the dashboard), the
-dashboard could no longer stop/match the device.
-
-**Fix:** running-state is derived from what adb actually reports
-(PID check kept as a fallback while the emulator is still booting and
-invisible to adb).
-
-## Resulting flow
-
-1. **Launch** → spawn emulator, verify it didn't exit within 3 s (catches
-   missing AVD/image with a clear error), then a background thread waits for
-   adb → boot, and applies system + hardware spoof (and Frida/battery/sensor
-   when launched with hooks) **on the actual serial**.
-2. **Spoof / Hooks** → resolve serial for *this* device, wait for boot,
-   apply, and report exactly what adb sees if the device truly isn't there.
-
-## Files changed
-
-- `core/device_manager.py` — cross-platform `pid_alive`/`kill_pid`, adb
-  helpers (`list_adb_devices`, `avd_name_for_serial`, `describe_adb_state`),
-  serial resolution & caching, unified post-launch bootstrap thread, safe
-  stop, AVD-creation fallback check.
-- `gui/app.py` — Spoof/Hooks/Install-Frida endpoints resolve the real
-  serial, wait for boot, and return precise diagnostics.
-- `core/hook_manager.py` — `frida -D <serial>`, frida CLI discovery,
-  fail-fast injection, `adb root` before starting frida-server,
-  Windows-safe session termination.
-- `frida/frida_server_manager.py` — `adb root` + `wait-for-device` and a
-  no-`su` fallback when starting the server.
-- `gui/static/js/app.js` — error toasts stay readable (12 s, click-to-dismiss).
-
-## Notes for your machine
-
-- If your local copy is newer than this repo (your UI showed "START.bat"
-  hints), the same five fixes apply — port `core/device_manager.py` and the
-  endpoint changes over, or replace those files with the fixed ones here.
-- Frida server still needs a **rootable** system image: `google_apis`
-  targets, not `google_apis_playstore` (`adb root` fails on Play-Store
-  images), and `pip install frida-tools` for the Hooks button.
+Run with: `python main.py gui` (or `START.bat` on Windows), then
+⚙️ Settings → 📷 Default cameras → "Use webcam0 for both" → Save defaults.

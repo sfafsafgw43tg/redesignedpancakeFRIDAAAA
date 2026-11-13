@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AntiDetect Emulator</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+
+<body>
+    <div class="app">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-left">
+                <span class="logo">🤖</span>
+                <h1>AntiDetect Emulator</h1>
+            </div>
+            <div class="header-right">
+                <button class="btn btn-icon" onclick="showSettings()" title="Settings">⚙️</button>
+                <button class="btn btn-icon" onclick="showHelp()" title="Help">❓</button>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main">
+            <!-- Device Grid -->
+            <section class="devices-section">
+                <div class="section-header">
+                    <h2>📱 Your Devices</h2>
+                    <button class="btn btn-primary" onclick="showCreateDialog()">
+                        <span>+</span> New Device
+                    </button>
+                </div>
+                <div class="devices-grid" id="devicesGrid">
+                    <!-- Devices will be loaded here -->
+                </div>
+            </section>
+
+            <!-- Quick Stats -->
+            <section class="stats-section">
+                <div class="stat-card">
+                    <div class="stat-icon">📱</div>
+                    <div class="stat-info">
+                        <span class="stat-value" id="totalDevices">0</span>
+                        <span class="stat-label">Total Devices</span>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon">🟢</div>
+                    <div class="stat-info">
+                        <span class="stat-value" id="runningDevices">0</span>
+                        <span class="stat-label">Running</span>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon">🔒</div>
+                    <div class="stat-info">
+                        <span class="stat-value" id="protectedDevices">0</span>
+                        <span class="stat-label">Anti-Detect Active</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- AntiDetect Status Panel -->
+            <section class="antidetect-section">
+                <div class="section-header">
+                    <h2>🛡️ AntiDetect Status</h2>
+                    <button class="btn btn-secondary" onclick="refreshStatus()">↻ Refresh</button>
+                </div>
+                <div class="status-grid">
+                    <div class="status-card" id="adbStatus">
+                        <div class="status-header">
+                            <span class="status-icon">📡</span>
+                            <span class="status-title">ADB Connection</span>
+                        </div>
+                        <div class="status-body">
+                            <span class="status-indicator disconnected">●</span>
+                            <span class="status-text">Checking...</span>
+                        </div>
+                    </div>
+                    <div class="status-card" id="fridaStatus">
+                        <div class="status-header">
+                            <span class="status-icon">🔧</span>
+                            <span class="status-title">Frida Server</span>
+                        </div>
+                        <div class="status-body">
+                            <span class="status-indicator disconnected">●</span>
+                            <span class="status-text">Checking...</span>
+                        </div>
+                        <button class="btn btn-small btn-primary" id="fridaInstallBtn" onclick="installFrida()"
+                            style="display:none;">
+                            Install Frida
+                        </button>
+                        <button class="btn btn-small btn-secondary" id="fridaFileBtn" onclick="installFridaFromFile()"
+                            title="Use a frida-server binary you already downloaded" style="display:none;">
+                            From file…
+                        </button>
+                    </div>
+                    <div class="status-card" id="spoofStatus">
+                        <div class="status-header">
+                            <span class="status-icon">🎭</span>
+                            <span class="status-title">Device Spoofing</span>
+                        </div>
+                        <div class="status-body">
+                            <span class="status-indicator disconnected">●</span>
+                            <span class="status-text">Ready</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Create Device Modal -->
+        <div class="modal" id="createModal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>Create New Device</h3>
+                    <button class="btn-close" onclick="hideCreateDialog()">×</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>Device Name (optional)</label>
+                        <input type="text" id="deviceName" placeholder="Auto-generated if empty">
+                    </div>
+                    <div class="form-group">
+                        <label>Phone Model</label>
+                        <select id="phoneModel">
+                            <option value="">Loading models...</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Android Version</label>
+                        <select id="androidVersion">
+                            <option value="14">Android 14 (API 34)</option>
+                            <option value="13">Android 13 (API 33)</option>
+                            <option value="12">Android 12 (API 31)</option>
+                            <option value="11">Android 11 (API 30)</option>
+                            <option value="10">Android 10 (API 29)</option>
+                            <option value="9">Android 9 (API 28)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>System Image</label>
+                        <select id="imageVariant" onchange="updateImageVariantHint()">
+                            <option value="google_apis">Google APIs (root capable - Frida &amp; spoofing work)</option>
+                            <option value="google_apis_playstore">Google Play Store (no root - Frida will not work)</option>
+                        </select>
+                        <small class="hint" id="imageVariantHint">
+                            Frida and property spoofing need <code>adb root</code>, which only the
+                            Google APIs (userdebug) image allows. Play Store images cannot run
+                            frida-server.
+                        </small>
+                    </div>
+                    <div class="form-group">
+                        <label>Cameras</label>
+                        <div class="camera-grid">
+                            <div>
+                                <small class="hint">Back camera</small>
+                                <input type="text" id="cameraBack" list="cameraOptions"
+                                    value="virtualscene" placeholder="virtualscene">
+                            </div>
+                            <div>
+                                <small class="hint">Front camera</small>
+                                <input type="text" id="cameraFront" list="cameraOptions"
+                                    value="emulated" placeholder="emulated">
+                            </div>
+                        </div>
+                        <datalist id="cameraOptions">
+                            <option value="virtualscene">Virtual scene (3D room)</option>
+                            <option value="emulated">Emulated (synthetic)</option>
+                            <option value="webcam0">Host webcam0 (real camera)</option>
+                            <option value="webcam1">Host webcam1</option>
+                            <option value="none">No camera</option>
+                        </datalist>
+                        <small class="hint">Use <code>webcam0</code> to pass your real webcam to the
+                            emulator. Allowed: emulated, virtualscene, webcam0/1/…, none.</small>
+                        <button class="btn btn-small btn-secondary" type="button" onclick="useWebcamForBoth()">
+                            Use webcam0 for both
+                        </button>
+                    </div>
+                    <div class="form-group">
+                        <label>Proxy (optional)</label>
+                        <input type="text" id="proxyAddress" placeholder="socks5://127.0.0.1:1080">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" onclick="hideCreateDialog()">Cancel</button>
+                    <button class="btn btn-primary" onclick="createDevice()">Create Device</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Device Details Modal -->
+        <div class="modal" id="detailsModal">
+            <div class="modal-content modal-large">
+                <div class="modal-header">
+                    <h3>Device Details</h3>
+                    <button class="btn-close" onclick="hideDetailsModal()">×</button>
+                </div>
+                <div class="modal-body" id="deviceDetails">
+                    <!-- Details loaded dynamically -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Settings Modal -->
+        <div class="modal" id="settingsModal">
+            <div class="modal-content modal-large">
+                <div class="modal-header">
+                    <h3>⚙️ Settings</h3>
+                    <button class="btn-close" onclick="hideSettings()">×</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>Android SDK folder</label>
+                        <div class="input-row">
+                            <input type="text" id="sdkPathInput" placeholder="e.g. C:\\Users\\you\\AppData\\Local\\Android\\Sdk">
+                            <button class="btn btn-secondary" onclick="browseSdkFolder()">Browse…</button>
+                            <button class="btn btn-primary" onclick="saveSdkPath()">Save</button>
+                        </div>
+                        <small class="hint" id="sdkPathHint">Checking…</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Install / repair SDK components</label>
+                        <div class="input-row">
+                            <select id="sdkInstallVersion"></select>
+                            <button class="btn btn-primary" onclick="installSdkComponents()" id="sdkInstallBtn">
+                                Install
+                            </button>
+                        </div>
+                        <small class="hint">Installs platform-tools, emulator and a system image with
+                            <code>sdkmanager</code> (downloads command-line tools if missing).</small>
+                        <pre class="install-log" id="sdkInstallLog"></pre>
+                    </div>
+
+                    <div class="form-group">
+                        <label>ADB connection</label>
+                        <div class="input-row">
+                            <button class="btn btn-primary" onclick="repairAdb()" id="repairAdbBtn">
+                                Repair ADB
+                            </button>
+                            <button class="btn btn-secondary" onclick="loadAdbStatus()">
+                                Check
+                            </button>
+                        </div>
+                        <small class="hint" id="adbStatusHint">
+                            Fixes an emulator stuck in the <code>offline</code> state
+                            (common right after <code>adb root</code> or after Android
+                            Studio started a different adb server).
+                        </small>
+                        <pre class="install-log" id="adbRepairLog"></pre>
+                    </div>
+
+                    <div class="form-group">
+                        <label>📷 Default cameras (used for new devices)</label>
+                        <div class="camera-grid">
+                            <div>
+                                <small class="hint">Back camera</small>
+                                <input type="text" id="settingsCameraBack" list="cameraOptions"
+                                    placeholder="virtualscene">
+                            </div>
+                            <div>
+                                <small class="hint">Front camera</small>
+                                <input type="text" id="settingsCameraFront" list="cameraOptions"
+                                    placeholder="emulated">
+                            </div>
+                        </div>
+                        <div style="margin-top: 0.6rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                            <button class="btn btn-small btn-secondary" type="button"
+                                onclick="useWebcamForBothSettings()">
+                                Use webcam0 for both
+                            </button>
+                            <button class="btn btn-small btn-primary" type="button"
+                                onclick="saveCameraDefaults()" id="saveCameraDefaultsBtn">
+                                Save defaults
+                            </button>
+                        </div>
+                        <small class="hint" id="cameraDefaultsHint">
+                            <code>webcam0</code> passes this computer's real webcam into the emulator.
+                            Change cameras of an <em>existing</em> device via its 📋 Details.
+                        </small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>App mode</label>
+                        <small class="hint" id="desktopHint">Checking…</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Toast Notifications -->
+        <div class="toast-container" id="toastContainer"></div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+
+</html>
