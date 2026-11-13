@@ -379,7 +379,15 @@ def is_system_image_installed(android_info):
     if not package or ANDROID_SDK_ROOT is None:
         return False
     image_dir = Path(ANDROID_SDK_ROOT) / package.replace(";", "/")
-    return (image_dir / "system.img").exists() or image_dir.exists()
+    # An existing-but-empty directory (left behind by a cancelled sdkmanager
+    # install) is NOT an installed image - requiring system.img itself is
+    # what keeps avdmanager from failing later with "Package path is not
+    # valid".
+    try:
+        img = image_dir / "system.img"
+        return img.exists() and img.stat().st_size > 0
+    except OSError:
+        return False
 
 
 def installed_image_packages():

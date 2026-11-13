@@ -25,11 +25,21 @@ class SystemSpoofer:
             return None
     
     def _adb_root(self):
-        """Get root access"""
-        self._adb(["root"])
-        time.sleep(1)
+        """Ensure adbd runs as root before applying protected properties.
+
+        Delegates to ``core.adb.root``, which is a no-op when the shell is
+        already root (the launch-time auto-root ran just before) and which
+        waits for the adbd restart + verifies ``uid=0`` otherwise - the old
+        fixed 2s sleep raced slow adbd restarts and dropped properties.
+        """
+        try:
+            from core import adb as adb_util
+            adb_util.root(self.device_serial, timeout=30)
+        except Exception:
+            pass
+        # Best-effort remount for the legacy emulator-file renames; no-op
+        # on read-only /system (Android 10+ super partitions).
         self._adb(["remount"])
-        time.sleep(1)
     
     def wait_for_boot(self, timeout=120):
         """Wait for device to fully boot"""

@@ -68,8 +68,16 @@ def create_app():
 
     @app.route("/api/devices")
     def get_devices():
-        """Get all devices"""
+        """Get all devices (each with the raw launch-state so the UI can show
+        'Starting…' while the automatic spoof/hooks chain still runs)."""
         devices = manager.list_devices()
+        with _launch_lock:
+            snapshot = {k: dict(v) for k, v in _launch_state.items()}
+        for device in devices:
+            state = (snapshot.get(device["name"]) or {}).get("state", "idle")
+            device["launch_state"] = state
+            if device.get("running") and state in ("starting", "booting"):
+                device["starting"] = True
         return jsonify(devices)
 
     @app.route("/api/devices", methods=["POST"])
@@ -334,7 +342,10 @@ def create_app():
         with _launch_lock:
             state = dict(_launch_state.get(name, {"state": "idle", "error": None}))
         running = manager._is_running(name)
-        if running and state.get("state") in ("idle", "starting", "booting"):
+        # Raw chain state: launch_device may still be auto-rooting / spoofing
+        # even after the emulator is up - clients need to see the difference.
+        state["launch_state"] = state.get("state", "idle")
+        if running and state["launch_state"] in ("idle", "starting", "booting"):
             state["state"] = "running"
         state.update({
             "name": name,
@@ -421,8 +432,12 @@ def create_app():
                             "serial": parts[0],
                             "status": parts[1]
                         })
+            # Only 'device' is a usable connection - 'offline'/'unauthorized'
+            # entries used to light the status card green during adbd restarts.
+            online = [d for d in devices if d["status"] == "device"]
             return jsonify({
-                "connected": len(devices) > 0,
+                "connected": len(online) > 0,
+                "online": len(online),
                 "devices": devices,
                 "adb_path": config.ADB_PATH,
             })
@@ -591,6 +606,20 @@ def create_app():
             return jsonify({"error": "Device not found"}), 404
         return jsonify(manager.diagnose_device(name))
 
+    def _still_starting(name):
+        """409 when a launch (and its automatic spoof+hooks) is in flight -
+        two overlapping spoof passes used to push properties concurrently
+        and double-restart adbd, wasting a minute or worse."""
+        with _launch_lock:
+            state = (_launch_state.get(name) or {}).get("state")
+        if state in ("starting", "booting"):
+            return jsonify({
+                "success": False,
+                "error": f"'{name}' is still launching - wait for the automatic "
+                         "spoof/hooks to finish, then retry.",
+            }), 409
+        return None
+
     @app.route("/api/devices/<name>/apply-antidetect", methods=["POST"])
     def apply_antidetect(name):
         """Apply system + hardware spoofing to the running emulator."""
@@ -601,6 +630,10 @@ def create_app():
         device = manager.get_device(name)
         if not device:
             return jsonify({"success": False, "error": "Device not found"}), 404
+
+        blocking = _still_starting(name)
+        if blocking is not None:
+            return blocking
 
         data = request.get_json(silent=True) or {}
         wait_seconds = int(data.get("wait", 60))
@@ -681,6 +714,16 @@ def create_app():
         device = manager.get_device(name)
         if not device:
             return jsonify({"success": False, "error": "Device not found"}), 404
+
+        blocking = _still_starting(name)
+        if blocking is not None:
+            return blocking
+        if manager.hooks_in_flight(name):
+            return jsonify({
+                "success": False,
+                "error": f"Hooks for '{name}' are already being applied in the "
+                         "background - wait for them to finish.",
+            }), 409
 
         serial = _device_serial(device)
         if not serial:

@@ -266,7 +266,22 @@ def setup_fake_sdk():
         echo "Created AVD $name"
         """)
 
-    write_exe(sdk / "cmdline-tools" / "latest" / "bin" / "sdkmanager", 'echo "sdkmanager $@"\n')
+    # sdkmanager: `--install system-images;...` materialises the image so the
+    # auto-install path in _create_avd can be exercised end-to-end.
+    write_exe(sdk / "cmdline-tools" / "latest" / "bin" / "sdkmanager", """\
+        echo "sdkmanager $@" >> "$FAKE_SDK_LOG"
+        if [ "$1" = "--install" ] || [ "$1" = "install" ]; then
+          pkg="$2"
+          case "$pkg" in
+            system-images\\;*)
+              path=$(echo "$pkg" | tr ';' '/')
+              mkdir -p "$ANDROID_SDK_ROOT/$path"
+              echo fake > "$ANDROID_SDK_ROOT/$path/system.img"
+              ;;
+          esac
+        fi
+        echo "sdkmanager $@"
+        """)
 
     os.environ["ANDROID_SDK_ROOT"] = str(sdk)
     os.environ["ANDROID_HOME"] = str(sdk)

@@ -124,7 +124,9 @@ check("api launch returns immediately", r.status_code == 200 and r.get_json().ge
 state = {}
 for _ in range(40):
     state = client.get("/api/devices/guidev/status").get_json()
-    if state.get("state") in ("running", "error"):
+    # launch_state is the raw chain state; "running" only once the automatic
+    # root/spoof chain has finished (the emulator itself can already be up).
+    if state.get("launch_state", state.get("state")) in ("running", "error"):
         break
     time.sleep(0.5)
 check("async launch reaches running", state.get("state") == "running", json.dumps(state)[:600])

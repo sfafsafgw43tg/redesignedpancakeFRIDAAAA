@@ -546,6 +546,22 @@ async function showDeviceDetails(name) {
                         ? ' — Play Store image: no adb root, so frida-server cannot run.'
                         : ''}
                 </p>
+                <p style="font-size: 0.8rem;">
+                    Root: ${device.rootable === false
+                        ? '<span style="color: var(--accent-danger);">unavailable (Play Store image)</span>'
+                        : (device.rooted === true
+                            ? '<span style="color: var(--accent-success);">✓ rooted via adb (shell/Frida are uid=0)' +
+                              (device.rooted_at ? ' since ' + device.rooted_at.slice(0, 19).replace('T', ' ') : '') +
+                              '</span>'
+                            : (device.rooted === false && device.root_error
+                                ? '<span style="color: var(--accent-danger);">⚠ ' + device.root_error + '</span>'
+                                : (device.auto_root !== false
+                                    ? '<span style="color: var(--accent-success);">will root automatically on launch</span>'
+                                    : '<span>disabled for this device</span>')))}
+                    ${device.rooted === true
+                        ? '<br><small class="hint">Root-checker apps still say "not rooted": there is no su binary on purpose - adb/Frida have root (verify: adb shell id). Apps probing Settings.Global.adb_enabled read 0 via the hooks.</small>'
+                        : ''}
+                </p>
             </div>
             <h5 style="margin: 1rem 0 0.75rem; color: var(--text-secondary);">Device Identity</h5>
             <div class="details-grid">
@@ -665,9 +681,9 @@ function renderDevices() {
                     <h3>${device.name}</h3>
                     <p class="device-model">${device.model}</p>
                 </div>
-                <div class="device-status ${device.running ? 'running' : 'stopped'}">
+                <div class="device-status ${device.starting ? 'starting' : (device.running ? 'running' : 'stopped')}">
                     <span class="status-dot"></span>
-                    ${device.running ? 'Running' : 'Stopped'}
+                    ${device.starting ? 'Starting…' : (device.running ? 'Running' : 'Stopped')}
                 </div>
             </div>
             <div class="device-details">
@@ -683,7 +699,10 @@ function renderDevices() {
                             : '<span class="device-tag tag-ok" title="Google APIs image: adb root available (auto-roots on launch)">✓ Root capable</span>'))}
             </div>
             <div class="device-actions">
-                ${device.running ? `
+                ${device.starting ? `
+                    <span class="hint">auto-root + spoof + hooks are applying…</span>
+                    <button class="btn btn-danger btn-sm" onclick="stopDevice('${device.name}')">Stop</button>
+                ` : device.running ? `
                     <button class="btn btn-primary btn-sm" onclick="applyAntidetect('${device.name}')" title="Apply device spoofing">🎭 Spoof</button>
                     <button class="btn btn-warning btn-sm" onclick="applyFridaHooks('${device.name}')" title="Apply Frida hooks">🔧 Hooks</button>
                     <button class="btn btn-danger btn-sm" onclick="stopDevice('${device.name}')">Stop</button>
@@ -702,7 +721,9 @@ function renderDevices() {
 function updateStats() {
     document.getElementById('totalDevices').textContent = devices.length;
     document.getElementById('runningDevices').textContent = devices.filter(d => d.running).length;
-    document.getElementById('protectedDevices').textContent = devices.length; // All devices have anti-detect
+    // Honest count: only devices whose hook chain actually completed.
+    document.getElementById('protectedDevices').textContent =
+        devices.filter(d => d.running && d.hooks_applied === true).length;
 }
 
 // Modal Functions

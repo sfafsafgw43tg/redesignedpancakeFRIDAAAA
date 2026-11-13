@@ -143,7 +143,7 @@ class ProxyManager:
                     "country": data.get("country"),
                     "isp": data.get("isp")
                 }
-            except:
+            except (ValueError, TypeError):
                 pass
         return None
 

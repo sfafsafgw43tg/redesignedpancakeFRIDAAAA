@@ -11,7 +11,8 @@ class HardwareSpoofer:
     def __init__(self, device_serial="emulator-5554"):
         self.device_serial = device_serial
         self.adb = config.ADB_PATH
-    
+        self._root_done = False
+
     def _adb(self, command):
         """Execute ADB command"""
         cmd = [self.adb, "-s", self.device_serial] + command
@@ -21,14 +22,23 @@ class HardwareSpoofer:
         except Exception as e:
             print(f"ADB error: {e}")
             return None
-    
+
     def _adb_root(self):
-        """Best-effort `adb root` (emulator user builds support it; `su` often doesn't)."""
+        """Best-effort `adb root` (emulator user builds support it; `su` often doesn't).
+
+        This used to run before EVERY root command - each `adb root`
+        restarts adbd, so a single spoof pass dropped the connection ~8
+        times (visible as flapping 'offline' states). Once per spoofer is
+        enough: root persists for the session on userdebug images.
+        """
+        if self._root_done:
+            return
         try:
             subprocess.run(
                 [self.adb, "-s", self.device_serial, "root"],
                 capture_output=True, timeout=10,
             )
+            self._root_done = True
         except Exception:
             pass
 

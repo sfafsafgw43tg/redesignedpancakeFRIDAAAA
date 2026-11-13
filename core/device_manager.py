@@ -105,6 +105,11 @@ class DeviceManager:
         config.LOGS_DIR.mkdir(parents=True, exist_ok=True)
         # name -> {"pid": int, "serial": str, "console_port": int, "process": Popen}
         self._running_processes = {}
+        # Device names whose post-boot hook chain (_apply_frida_hooks) is
+        # still running - the dashboard refuses a second Hooks click while
+        # one is in flight (double frida-server pushes raced each other).
+        self._hooks_in_flight = set()
+        self._hooks_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Listing / lookup
@@ -698,6 +703,7 @@ tag.id={tag_id}
         # Root never survives a reboot; the auto-root step below re-applies it.
         device["rooted"] = None
         device["root_error"] = None
+        device["hooks_applied"] = None
         self._save_device(device)
 
         # --- Prove the process stays alive --------------------------------
@@ -784,14 +790,16 @@ tag.id={tag_id}
 
         self._cleanup_process_entry(name)
 
-        # Root state does not survive the stop; clear it so a restarted
-        # dashboard doesn't claim a stopped device is still rooted.
+        # Root/hook state does not survive the stop; clear it so a restarted
+        # dashboard doesn't claim a stopped device is still rooted/hooked.
         try:
             stopped = self._load_device(name)
             if stopped is not None and (stopped.get("rooted") is not None
-                                        or stopped.get("root_error")):
+                                        or stopped.get("root_error")
+                                        or stopped.get("hooks_applied") is not None):
                 stopped["rooted"] = None
                 stopped["root_error"] = None
+                stopped["hooks_applied"] = None
                 self._save_device(stopped)
         except Exception:
             pass
@@ -1324,25 +1332,47 @@ tag.id={tag_id}
         from spoof.sensor_simulator import SensorSimulator
 
         def run_hooks():
-            hooks = HookManager(device_serial=serial)
-            if not hooks.wait_for_device(timeout=60):
-                print(f"[AntiDetect] Device not ready for {device['name']}")
-                return
-            if hooks.apply_all_protections(device["identity"]):
-                print(f"[AntiDetect] Frida hooks applied to {device['name']}")
-            else:
-                print(f"[AntiDetect] Failed to apply Frida hooks for {device['name']}")
+            with self._hooks_lock:
+                if device["name"] in self._hooks_in_flight:
+                    return
+                self._hooks_in_flight.add(device["name"])
+            try:
+                hooks = HookManager(device_serial=serial)
+                if not hooks.wait_for_device(timeout=60):
+                    print(f"[AntiDetect] Device not ready for {device['name']}")
+                    return
+                if hooks.apply_all_protections(device["identity"]):
+                    print(f"[AntiDetect] Frida hooks applied to {device['name']}")
+                    # Persist for the dashboard's "Anti-Detect Active" stat.
+                    try:
+                        live = self._load_device(device["name"])
+                        if live is not None:
+                            live["hooks_applied"] = True
+                            live["hooks_applied_at"] = datetime.now().isoformat()
+                            self._save_device(live)
+                    except Exception:
+                        pass
+                else:
+                    print(f"[AntiDetect] Failed to apply Frida hooks for {device['name']}")
 
-            battery_sim = BatterySimulator(device_serial=serial)
-            battery_sim.start_simulation(device.get("model", "Samsung Galaxy S24"))
-            print(f"[AntiDetect] Battery simulation started for {device['name']}")
+                battery_sim = BatterySimulator(device_serial=serial)
+                battery_sim.start_simulation(device.get("model", "Samsung Galaxy S24"))
+                print(f"[AntiDetect] Battery simulation started for {device['name']}")
 
-            sensor_sim = SensorSimulator(device_serial=serial)
-            sensor_sim.start_simulation(mode="idle")
-            print(f"[AntiDetect] Sensor simulation started for {device['name']}")
+                sensor_sim = SensorSimulator(device_serial=serial)
+                sensor_sim.start_simulation(mode="idle")
+                print(f"[AntiDetect] Sensor simulation started for {device['name']}")
+            finally:
+                with self._hooks_lock:
+                    self._hooks_in_flight.discard(device["name"])
 
         thread = threading.Thread(target=run_hooks, daemon=True)
         thread.start()
+
+    def hooks_in_flight(self, name):
+        """True while this device's post-boot hook chain is still running."""
+        with self._hooks_lock:
+            return name in self._hooks_in_flight
 
     def _apply_hardware_spoof(self, device, serial="emulator-5554"):
         """Apply hardware spoofing (boot already confirmed by caller)."""

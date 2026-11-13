@@ -264,6 +264,15 @@ body {
     color: var(--accent-success);
 }
 
+.device-status.starting {
+    background: rgba(210, 153, 34, 0.15);
+    color: var(--accent-warning);
+}
+
+.starting .status-dot {
+    animation: pulse 1s infinite;
+}
+
 .device-status.stopped {
     background: rgba(139, 148, 158, 0.15);
     color: var(--text-secondary);

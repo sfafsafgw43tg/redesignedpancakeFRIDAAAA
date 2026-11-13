@@ -240,3 +240,37 @@ binary (Magisk/SuperSU) to get root, which is deliberately not installed
 - for anti-detect, "rooted via adb only, invisible to apps" is usually
 exactly what you want. Root verification: `adb shell id` = `uid=0(root)`
 ≡ the dashboard's ✓ Root tag.
+
+---
+
+## Round 6: full sweep ("fix all bugs, make all fully work")
+
+- **Android 12 / other-version creation failing** ("Package path is not
+  valid; valid system image paths are…"): `is_system_image_installed`
+  counted an *empty directory* (sdkmanager cancel/crash remnant) as an
+  installed image, so the auto-install never ran and avdmanager choked.
+  Now an image only counts as installed when a non-empty `system.img`
+  exists; `create` auto-installs missing images for ANY supported Android
+  version before avdmanager runs (regression test
+  `tests/image_install_test.py`, fake sdkmanager now materialises images).
+- **Concurrent Spoof/Hooks while the launch chain is up** (the double
+  spoofing runs + double frida-server pushes in the logs): apply endpoints
+  now return a clear 409 when the launch chain (`starting`/`booting`) or a
+  background hook run is still in flight; per-device hook in-flight
+  registry dedupes the chain itself.
+- **Status lies**: `/api/status/adb` only counts devices in `device`
+  state (an 'offline' entry no longer lights the card green); the device
+  list exposes `launch_state`, the card shows `Starting…` (action buttons
+  hidden except Stop) until root+spoof+hooks finish; the
+  "Anti-Detect Active" counter now counts devices whose hook chain really
+  completed (`hooks_applied` persisted, cleared on stop/relaunch) instead
+  of "all devices".
+- **Root turbulence during spoofing**: SystemSpoofer delegates to the
+  verified `core.adb.root` (no-op when already rooted — no extra adbd
+  restart; kills the old fixed 2s race); HardwareSpoofer no longer re-runs
+  `adb root` before every root command (~8 adbd restarts per pass → 1).
+- Root state surfaced in the Details dialog (live status + explanation why
+  Root-Checker apps report "not rooted"); CLI `list` shows a Root line.
+- Bare `except:` removed in proxy manager.
+
+All 11 test suites pass.

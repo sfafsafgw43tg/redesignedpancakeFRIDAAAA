@@ -161,10 +161,21 @@ def list_devices():
     print(f"\n{Fore.CYAN}📱 Your Devices:{Style.RESET_ALL}\n")
     for device in devices:
         status = f"{Fore.GREEN}● Running{Style.RESET_ALL}" if device.get("running") else f"{Fore.RED}○ Stopped{Style.RESET_ALL}"
+        if device.get("rootable") is False:
+            root = f"{Fore.YELLOW}unavailable (Play Store image){Style.RESET_ALL}"
+        elif device.get("rooted") is True:
+            root = f"{Fore.GREEN}rooted (adb root){Style.RESET_ALL}"
+        elif device.get("rooted") is False and device.get("root_error"):
+            root = f"{Fore.RED}failed: {device['root_error']}{Style.RESET_ALL}"
+        elif device.get("auto_root", True):
+            root = "auto-roots on launch"
+        else:
+            root = "disabled (--no-root)"
         print(f"  {device['name']}")
         print(f"    Model: {device['model']}")
         print(f"    Android: {device['android_version']}")
         print(f"    Status: {status}")
+        print(f"    Root: {root}")
         print()
 
 
