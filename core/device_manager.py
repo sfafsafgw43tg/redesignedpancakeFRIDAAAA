@@ -28,6 +28,7 @@ from pathlib import Path
 
 import config
 from core import adb
+from core import emulator_console
 from profiles.device_profiles import get_model_profile
 from profiles.profile_generator import generate_device_identity
 from spoof.system_props import generate_props_config
@@ -792,7 +793,7 @@ tag.id={tag_id}
     # ------------------------------------------------------------------
     # Runtime helpers
     # ------------------------------------------------------------------
-    def get_device_serial(self, name, persist=True):
+    def get_device_serial(self, name, persist=True, heal=True):
         """Serial of the *running* emulator for this device (or None).
 
         Resolution order:
@@ -800,7 +801,10 @@ tag.id={tag_id}
         2. an emulator whose AVD name matches this device (covers emulators
            started outside the app, or relaunched on a new port),
         3. the only running emulator, but *only* when this device has no
-           recorded serial and no AVD name to match against.
+           recorded serial and no AVD name to match against,
+        4. SELF-HEAL: when the emulator console proves the device is alive
+           but adb lost it, restart the adb server (emulators re-register)
+           and match again.
 
         A resolved serial that differs from the saved one is persisted so
         later calls (spoofing, Frida, stop) hit the same instance.
@@ -831,20 +835,111 @@ tag.id={tag_id}
             # running emulator rather than making the device unusable.
             matched = adb.detect_serial()
 
+        if matched is None and heal:
+            matched = self._heal_adb_and_rematch(device)
+
         if matched and matched != saved:
             device["serial"] = matched
-            try:
-                self._save_device(device)
-            except Exception:
-                pass
+            if persist:
+                try:
+                    self._save_device(device)
+                except Exception:
+                    pass
             print(f"[DeviceManager] Bound device '{name}' to running emulator "
                   f"{matched} (AVD {avd_name}).")
         # No connected emulator -> None. A saved serial for an emulator that
         # isn't running must not be treated as a usable device.
         return matched
 
+    def _heal_adb_and_rematch(self, device):
+        """Recover an emulator whose console is alive but adb can't see it.
+
+        Returns the serial after healing, or None when there is no live
+        console for this device (i.e. it really is not running).
+        """
+        name = device.get("name")
+        avd_name = device.get("avd_name")
+        entry = self._running_processes.get(name, {})
+
+        # Positive evidence the emulator is alive outside of adb:
+        console_port = device.get("console_port")
+        alive_port = None
+        if console_port:
+            avd = emulator_console.probe_console(console_port)
+            if avd and (not avd_name or avd == avd_name):
+                alive_port = int(console_port)
+
+        if alive_port is None and (
+            self._pid_alive(entry.get("pid")) or self._pid_alive(device.get("pid"))
+        ):
+            # The port we recorded is wrong/stale but the process is alive:
+            # scan the console range for this AVD.
+            for port, avd in emulator_console.scan_consoles().items():
+                if avd_name and avd == avd_name:
+                    alive_port = port
+                    break
+
+        if alive_port is None:
+            return None  # genuinely not running
+
+        print(f"[DeviceManager] Emulator for '{name}' answers on console port "
+              f"{alive_port} but adb can't see it - restarting the adb server "
+              "so it re-registers.")
+        restarted, found = adb.restart_server(wait_timeout=25)
+        if not restarted:
+            return None
+
+        expected = f"emulator-{alive_port}"
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            states = {d["serial"]: d["state"] for d in adb.devices()}
+            for serial, state in states.items():
+                if state != "device" or not serial.startswith("emulator-"):
+                    continue
+                if serial == expected:
+                    return serial
+                if avd_name and adb.emu_avd_name(serial) == avd_name:
+                    return serial
+            time.sleep(1)
+        return None
+
+    def _console_confirms(self, device):
+        """True when the device's recorded console port answers with its AVD.
+
+        The emulator console listens even when adb has lost track of the
+        emulator, so this is the ground truth for "is there a live emulator
+        for this device". A pid alone is NOT proof: after a crash, Windows
+        happily reuses the pid for an unrelated process, which used to pin
+        the dashboard on "Running" forever.
+        """
+        port = (device or {}).get("console_port")
+        if not port:
+            return False
+        avd = emulator_console.probe_console(port)
+        if avd is None:
+            return False
+        expected = (device or {}).get("avd_name")
+        return not expected or avd == expected
+
+    @staticmethod
+    def _recently_launched(device, within_seconds=600):
+        """True for a few minutes after launch (console not listening yet)."""
+        launched_at = (device or {}).get("launched_at")
+        if not launched_at:
+            return False
+        try:
+            started = datetime.fromisoformat(str(launched_at))
+        except ValueError:
+            return False
+        return (datetime.now() - started).total_seconds() < within_seconds
+
     def _is_running(self, name):
-        """Check if device is running (PID + ADB serial, survives restarts)."""
+        """Check if device is running (PID + console probe + ADB serial).
+
+        Survives app restarts and does not confuse a stale/reused pid with a
+        live emulator: a persisted pid only counts when the emulator console
+        confirms it, or for a short grace window right after launch.
+        """
         entry = self._running_processes.get(name)
         if entry:
             proc = entry.get("process")
@@ -861,16 +956,35 @@ tag.id={tag_id}
         if serial and self._adb_serial_present(serial):
             return True
         if device and self._pid_alive(device.get("pid")):
-            return True
+            # A live pid is only trustworthy when the emulator console also
+            # answers, or right after launch while the console is still
+            # coming up. Otherwise the pid was recycled by another process
+            # (very common on Windows) and the emulator is long gone.
+            if self._console_confirms(device) or self._recently_launched(device):
+                return True
+            # Forget the stale pid so later checks stay fast and honest.
+            try:
+                device.pop("pid", None)
+                self._save_device(device)
+            except Exception:
+                pass
+            return False
         # Emulator started outside the app (or before a restart): match it by
         # AVD name so the dashboard shows the device as running. The resolved
         # serial must actually be connected - a stale saved serial is not
-        # evidence that the device is up.
+        # evidence that the device is up. (No healing here: _is_running runs
+        # on every dashboard refresh; the action endpoints heal on demand.)
         try:
-            resolved = self.get_device_serial(name, persist=True)
+            resolved = self.get_device_serial(name, persist=True, heal=False)
         except Exception:
             resolved = None
-        return bool(resolved and self._adb_serial_present(resolved))
+        if resolved and self._adb_serial_present(resolved):
+            return True
+        # Last resort for adb-blind situations: the emulator console answers
+        # with this device's AVD name even when `adb devices` is empty.
+        if device:
+            return self._console_confirms(device)
+        return False
 
     @staticmethod
     def _pid_alive(pid):
@@ -1086,6 +1200,7 @@ tag.id={tag_id}
             raise SdkNotFoundError(f"ADB not found at {config.ADB_PATH}")
         start = time.time()
         offline_hits = 0
+        server_restarted = False
         state = None
         while time.time() - start < timeout:
             if process is not None and process.poll() is not None:
@@ -1101,8 +1216,26 @@ tag.id={tag_id}
                 elif state in ("offline", "unknown", None):
                     offline_hits += 1
                     if offline_hits == 4:
-                        ok, detail = adb.recover(serial, timeout=30)
-                        print(f"[DeviceManager] adb reported '{state}' for {serial}; {detail}")
+                        # A fresh emulator is briefly "offline" - but when its
+                        # CONSOLE already answers while adb shows nothing at
+                        # all, the adb server lost the registration. Restart
+                        # it once to make every running emulator re-register.
+                        try:
+                            console_port = int(str(serial).rsplit("-", 1)[1])
+                        except (ValueError, IndexError):
+                            console_port = None
+                        console_alive = (
+                            console_port is not None
+                            and emulator_console.probe_console(console_port) is not None
+                        )
+                        if console_alive and state is None and not server_restarted:
+                            server_restarted = True
+                            print(f"[DeviceManager] {serial} answers on its console "
+                                  "port but adb can't see it - restarting adb server")
+                            adb.restart_server(wait_timeout=20)
+                        else:
+                            ok, detail = adb.recover(serial, timeout=30)
+                            print(f"[DeviceManager] adb reported '{state}' for {serial}; {detail}")
             except Exception:
                 pass
             time.sleep(2)
@@ -1124,6 +1257,32 @@ tag.id={tag_id}
             return "\n".join(tail) if tail else "(log is empty)"
         except OSError as exc:
             return f"(could not read log: {exc})"
+
+    def diagnose_device(self, name):
+        """Full diagnostic snapshot for 'adb does not see my emulator' errors.
+
+        Answers, per device: is the saved process alive? does the emulator
+        console answer (and with which AVD)? what can adb see? what does the
+        emulator log say? Used by the Spoof/Hooks endpoints so their error
+        message names the real problem instead of just "adb is empty".
+        """
+        device = self._load_device(name) or {}
+        serial = device.get("console_port")
+        console_avd = emulator_console.probe_console(serial) if serial else None
+        consoles = {} if console_avd else emulator_console.scan_consoles()
+        return {
+            "device": name,
+            "avd_name": device.get("avd_name"),
+            "pid": device.get("pid"),
+            "pid_alive": self._pid_alive(device.get("pid")),
+            "console_port": device.get("console_port"),
+            "console_avd": console_avd,
+            "consoles_found": consoles,
+            "adb_describe": adb.describe_devices(include_avd=True),
+            "adb_available": adb.adb_available(),
+            "log_path": str(self.get_log_path(name)),
+            "log_tail": self.get_log_tail(name, lines=12),
+        }
 
     # ------------------------------------------------------------------
     # Spoofing (serial-aware, called after boot is confirmed)

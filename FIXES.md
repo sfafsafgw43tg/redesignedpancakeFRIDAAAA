@@ -71,3 +71,72 @@ python tests/adb_recovery_test.py         # offline-device healing
 
 Run with: `python main.py gui` (or `START.bat` on Windows), then
 ⚙️ Settings → 📷 Default cameras → "Use webcam0 for both" → Save defaults.
+
+---
+
+## Round 3: "Running" but `adb devices` stays empty — for good
+
+You re-tested and the dashboard still said **Running** while Spoof/Hooks got
+*adb devices is empty*. Two further root causes, both fixed:
+
+### 3a. Stale/reused pids faked "Running" forever
+`_is_running` trusted a persisted pid blindly. After an emulator crash,
+Windows quickly **reuses that pid for an unrelated process** — the dashboard
+then showed "Running" for something that wasn't an emulator at all, while adb
+(correctly) saw nothing.
+
+→ A pid now only counts as evidence when the **emulator console port confirms
+it** (`avd name` over TCP 127.0.0.1:5554/5556/…) or during a short grace
+window right after launch. Stale pids are detected and cleared from
+`data/devices/<name>.json`, so the card flips back to Stopped and Launch
+becomes available again. New module: `core/emulator_console.py` (banner +
+auth-token handling).
+
+### 3b. A live emulator adb can't see is now self-healed
+adb registration genuinely breaks (stale adb server, version clash with a
+second platform-tools copy, killed server). Previously every Spoof/Hooks
+click just failed. Now `get_device_serial()`:
+
+1. probes the recorded console port (or scans 5554–5568 when the pid is
+   alive) — an emulator console answers **even when adb is blind**;
+2. when the console proves the device is alive, **restarts the local adb
+   server** (rate-limited, so refresh loops can't spam it) — running
+   emulators re-register automatically;
+3. re-matches the serial (`emulator-<console port>` or by AVD name) and
+   persists it.
+
+The launch-time `wait_for_boot` does the same once mid-boot instead of
+burning the whole boot timeout on an adb-blind emulator.
+
+### 3c. Errors that actually say what's wrong
+Spoof/Hooks failures now include a **diagnostic snapshot**: whether the saved
+process is alive, whether any emulator console answers (and which AVDs), what
+adb lists, and the last lines of the emulator log (`data/logs/<name>.log`).
+Plus a new `GET /api/devices/<name>/diagnose` endpoint with the full picture.
+
+### New probe/heal tests
+`tests/console_heal_test.py` (14 checks) simulates the emulator console over
+a real socket: AVD probing with/without auth token, stale-pid rejection,
+console-confirmed running state, and the full
+console-alive + adb-blind → restart → re-register → serial healed flow.
+
+All 9 test suites pass:
+
+```
+python tests/console_heal_test.py      # NEW: console probe + adb self-heal
+python tests/settings_camera_test.py   # settings camera defaults, pid probe
+python tests/camera_test.py            # per-device cameras incl. webcam0
+python tests/frida_serial_test.py      # serial binding, frida install/status
+python tests/integration_launch_test.py
+python tests/cli_gui_smoke_test.py
+python tests/settings_desktop_test.py
+python tests/console_spoof_test.py
+python tests/adb_recovery_test.py
+```
+
+**If the emulator still doesn't appear after this update**, the new error
+message tells you why. The most common remaining cause: the emulator window
+is stuck before boot (hardware acceleration missing) — open
+`data/logs/first_device.log` (path is in the error), and enable
+VT-x/AMD-V + "Windows Hypervisor Platform", or start the virtual machine
+from Android Studio once to validate the image.

@@ -139,6 +139,44 @@ def recover(serial=None, timeout=45):
     )
 
 
+# Rate limit for restart_server() - healing is attempted at most this often,
+# so a dashboard refresh loop can't restart the adb server in a loop.
+_SERVER_RESTART_COOLDOWN = 20.0
+_last_server_restart = 0.0
+
+
+def restart_server(wait_timeout=25, poll=1.0):
+    """Restart the local adb server so running emulators re-register with it.
+
+    The standard fix for "emulator is alive (its console port answers) but
+    ``adb devices`` is empty": a stale or version-clashing adb server loses
+    every emulator registration, and a fresh server makes them all come back.
+
+    Rate-limited by ``_SERVER_RESTART_COOLDOWN``. Returns ``(restarted,
+    devices)`` where ``devices`` is the listing after the restart attempt
+    (empty when nothing re-registered within ``wait_timeout`` seconds).
+    """
+    global _last_server_restart
+    if not adb_available():
+        return False, []
+
+    now = time.time()
+    if now - _last_server_restart >= _SERVER_RESTART_COOLDOWN:
+        _last_server_restart = now
+        _run(["kill-server"], timeout=10)
+        _run(["start-server"], timeout=20)
+
+    # Give emulators a moment to re-register with the fresh server.
+    deadline = time.time() + wait_timeout
+    found = devices()
+    while time.time() < deadline:
+        if any(d["state"] == "device" for d in found):
+            break
+        time.sleep(poll)
+        found = devices()
+    return True, found
+
+
 def root(serial, timeout=60, poll=1.0):
     """Run ``adb root`` and *wait* for adbd to come back.
 

@@ -568,6 +568,13 @@ def create_app():
             "listing": adb.device_listing(),
         })
 
+    @app.route("/api/devices/<name>/diagnose")
+    def diagnose_device(name):
+        """Why doesn't adb see this device's emulator? (pid/console/adb/log)."""
+        if not manager._load_device(name):
+            return jsonify({"error": "Device not found"}), 404
+        return jsonify(manager.diagnose_device(name))
+
     @app.route("/api/devices/<name>/apply-antidetect", methods=["POST"])
     def apply_antidetect(name):
         """Apply system + hardware spoofing to the running emulator."""
@@ -584,13 +591,30 @@ def create_app():
 
         serial = _device_serial(device)
         if not serial:
+            diag = manager.diagnose_device(name)
+            if diag["pid_alive"] and not diag["console_avd"] and not diag["consoles_found"]:
+                # Process alive, but no emulator console answers: it is stuck
+                # (error dialog, GPU/accel failure, ...) rather than running.
+                hint = (
+                    f"A process for '{name}' is alive (pid {diag['pid']}) but no "
+                    "emulator console responds - it is stuck before boot. Check the "
+                    f"log: {diag['log_path']}. Last lines: "
+                    + " | ".join(diag["log_tail"].splitlines()[-3:])
+                )
+            elif diag["consoles_found"]:
+                found = ", ".join(f"port {p} (AVD {a})" for p, a in diag["consoles_found"].items())
+                hint = (f"Found emulator console(s): {found} - none runs the AVD "
+                        f"'{diag['avd_name']}'. ")
+            else:
+                hint = "No emulator process, console or adb device found - it is not running. "
             return jsonify({
                 "success": False,
                 "error": (
                     f"No running emulator matches '{name}' "
-                    f"(AVD {(manager._load_device(name) or {}).get('avd_name', '?')}). "
-                    f"adb reports: {adb.describe_devices(include_avd=True)}. "
-                    "Launch the device from the dashboard (or let START.bat do it)."
+                    f"(AVD {diag['avd_name'] or '?'}). "
+                    f"adb reports: {diag['adb_describe']}. " + hint
+                    + "Launch the device from the dashboard (or let START.bat do it), "
+                      "wait for the home screen, then retry."
                 ),
             }), 409
 
@@ -644,11 +668,19 @@ def create_app():
 
         serial = _device_serial(device)
         if not serial:
+            diag = manager.diagnose_device(name)
+            hint = ""
+            if diag["pid_alive"] and not diag["console_avd"] and not diag["consoles_found"]:
+                hint = (f" A process for '{name}' is alive but stuck before boot "
+                        f"(no emulator console answers) - check {diag['log_path']}.")
+            elif diag["consoles_found"]:
+                found = ", ".join(f"port {p} (AVD {a})" for p, a in diag["consoles_found"].items())
+                hint = f" Emulator console(s) alive: {found}."
             return jsonify({
                 "success": False,
                 "error": (
                     f"No running emulator matches '{name}'. "
-                    f"adb reports: {adb.describe_devices(include_avd=True)}."
+                    f"adb reports: {diag['adb_describe']}." + hint
                 ),
             }), 409
 
