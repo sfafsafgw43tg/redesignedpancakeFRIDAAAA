@@ -168,3 +168,34 @@ no hunting for the right settings:
   and GUI create fallback.
 
 All 10 test suites pass.
+
+### Round 4 follow-up: spoofing killed adb ("device does not set as rooted")
+
+Root cause: `spoof/system_spoof.py` ended with
+`settings put global adb_enabled 0` to hide USB debugging from apps.
+On an emulator adb is our **only** management channel, and the Mainline
+AdbService observes that setting — adbd stopped right after "Settings
+applied", the device went `offline` for good, and no
+kill-server/reconnect could revive it (the setting even persists across
+reboots). Every later Frida hook attempt therefore failed with
+"Device not ready", so nothing after rooting ever worked.
+
+Fixes:
+
+- The `adb_enabled=0` write is **removed** (with a comment explaining why).
+- The anti-detection goal is preserved *without* breaking the channel:
+  `frida/scripts/anti_detect.js` now hooks `Settings$Global.getInt` so
+  in-app probes of `adb_enabled` and `development_settings_enabled`
+  read back **0**, while the real adb stays up.
+- Regression guard in `tests/auto_root_test.py`: the spoof flow must
+  never issue `settings put ... adb_enabled`.
+- Note: **Root Checker-style apps always report "not rooted"** on these
+  devices — `adb root` gives the adb shell and Frida root, but apps only
+  see root when an `su` binary (Magisk/SuperSU) is installed, which is
+  out of scope (and usually undesirable) for an anti-detect emulator.
+  The correct check is `adb shell id` → `uid=0(root)` (the dashboard tag
+  "✓ Root" means exactly this).
+
+If a device was already bricked this way (`offline` forever after spoof):
+delete it in the dashboard and re-create it — that wipes the userdata
+image where `adb_enabled=0` was persisted.

@@ -153,6 +153,7 @@ Devices are **rooted automatically right after boot** (`adb root`, with the adbd
 - Toggle globally in **⚙️ Settings → 🔓 Rooting**, or per device in the **New Device** dialog ("Root automatically after launch", on by default) / CLI `--no-root`.
 - Only the **Google APIs** image allows `adb root`; on Play Store images the card shows **⚠ No root** and the device file records why.
 - The device card shows the *actual* state: **✓ Root** (rooted this session), **✓ Root capable** (will be rooted at launch), **⚠ Root failed** (hover for the reason), **⚠ No root** (Play Store image). Root state clears on stop because it never survives a reboot.
+- `adb root` gives root to the **shell / Frida**, not to apps — a "Root Checker" app will still say *not rooted* (no `su` binary is installed; that would need Magisk, which anti-detect profiles usually want to avoid). Verify with `adb shell id` → `uid=0(root)`. Apps probing `Settings.Global.adb_enabled` are answered `0` by the Frida hooks, so adb can stay up without being detectable.
 
 ### 📷 Cameras (including your real webcam)
 When creating a device (GUI **New Device** dialog or `create` command) you can choose a source for the **back** and **front** camera:

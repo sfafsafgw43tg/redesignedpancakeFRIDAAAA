@@ -80,6 +80,12 @@ check("adb root issued to the device serial",
       any(f"-s {serial} root" in line for line in log_lines()),
       f"serial={serial}")
 
+# Regression guard: spoofing must never disable adb on the device
+# (adb_enabled=0 stops adbd for good - adb is our only management channel;
+#  the anti-detect value is spoofed for apps via the Frida Settings hooks).
+bad = [line for line in log_lines()
+       if "settings" in line and "adb_enabled" in line]
+check("spoofing never touches adb_enabled", not bad, "; ".join(bad))
 mgr.stop_device("rootdev_a")
 saved = get_device_file("rootdev_a")
 check("stop clears root state", saved.get("rooted") is None and not saved.get("root_error"))

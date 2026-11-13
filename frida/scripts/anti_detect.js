@@ -374,9 +374,33 @@ Java.perform(function () {
             if (name === "device_name") {
                 return config.model;
             }
+            if (name === "emulator_device_name") {
+                return "";
+            }
             return this.getString(resolver, name);
         };
-        console.log("[AntiDetect] Device Name spoofed in Settings ✓");
+
+        // Anti-detection without breaking adb: emulator management needs
+        // adb_enabled ON, but apps probing Settings.Global should see "off".
+        // (Setting adb_enabled=0 for real stops adbd and bricks the channel.)
+        Global.getInt.overload("android.content.ContentResolver", "java.lang.String").implementation =
+            function (resolver, name) {
+                if (name === "adb_enabled") {
+                    return 0;
+                }
+                if (name === "development_settings_enabled") {
+                    return 0;
+                }
+                return this.getInt(resolver, name);
+            };
+        Global.getInt.overload("android.content.ContentResolver", "java.lang.String", "int").implementation =
+            function (resolver, name, def) {
+                if (name === "adb_enabled" || name === "development_settings_enabled") {
+                    return 0;
+                }
+                return this.getInt(resolver, name, def);
+            };
+        console.log("[AntiDetect] Device Name + adb_enabled spoofed in Settings ✓");
     } catch (e) {
         console.log("[AntiDetect] Device Name hook error: " + e);
     }

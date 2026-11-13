@@ -138,7 +138,15 @@ class SystemSpoofer:
         commands = [
             ["shell", "settings", "put", "global", "emulator_device_name", ""],
             ["shell", "settings", "put", "global", "development_settings_enabled", "0"],
-            ["shell", "settings", "put", "global", "adb_enabled", "0"],
+            # NOTE: adb_enabled is intentionally NOT set to 0 here.
+            # On an emulator adb is our ONLY management channel: setting
+            # adb_enabled=0 stops adbd (the Mainline AdbService observes the
+            # setting), the device goes 'offline' for good and even
+            # kill-server/reconnect cannot bring it back - the setting also
+            # persists across reboots, so the AVD becomes unmanageable until
+            # its userdata is wiped. The anti-detection goal (apps checking
+            # Settings.Global "adb_enabled") is preserved by the Frida hooks
+            # in frida/scripts/anti_detect.js, which spoof the read instead.
         ]
         for cmd in commands:
             self._adb(cmd)
