@@ -15,6 +15,9 @@ let models = {};
 // Camera defaults saved via ⚙️ Settings; prefill for the Create Device form.
 let cameraDefaults = { front: 'emulated', back: 'virtualscene' };
 
+// Auto-root default saved via ⚙️ Settings; prefill for the Create Device form.
+let autoRootDefault = true;
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     loadDevices();
@@ -303,12 +306,30 @@ function updateImageVariantHint() {
     const select = document.getElementById('imageVariant');
     const hint = document.getElementById('imageVariantHint');
     if (!select || !hint) return;
+    const autoRoot = document.getElementById('autoRoot');
+    const autoRootHint = document.getElementById('autoRootHint');
     if (select.value === 'google_apis_playstore') {
         hint.innerHTML = '<strong>⚠ No root:</strong> frida-server and property spoofing ' +
             'will <em>not</em> work on this device. Pick "Google APIs" if you need Frida.';
+        if (autoRoot) {
+            autoRoot.checked = false;
+            autoRoot.disabled = true;
+        }
+        if (autoRootHint) {
+            autoRootHint.innerHTML = '⚠ Play Store images refuse <code>adb root</code> - ' +
+                'automatic rooting is disabled for this image.';
+        }
     } else {
         hint.innerHTML = 'Frida and property spoofing need <code>adb root</code>, which only ' +
             'the Google APIs (userdebug) image allows.';
+        if (autoRoot) {
+            autoRoot.disabled = false;
+            autoRoot.checked = autoRootDefault;
+        }
+        if (autoRootHint) {
+            autoRootHint.innerHTML = 'Runs <code>adb root</code> as soon as the device boots, ' +
+                'so Frida hooks and property spoofing work without any manual step.';
+        }
     }
 }
 
@@ -361,6 +382,8 @@ async function createDevice() {
     const cameraBack = document.getElementById('cameraBack').value.trim();
     const imageVariantEl = document.getElementById('imageVariant');
     const imageVariant = imageVariantEl ? imageVariantEl.value : undefined;
+    const autoRootEl = document.getElementById('autoRoot');
+    const autoRoot = autoRootEl ? autoRootEl.checked : undefined;
 
     if (!model) {
         showToast('Please select a phone model', 'error');
@@ -378,7 +401,8 @@ async function createDevice() {
                 proxy: proxy || undefined,
                 camera_front: cameraFront || undefined,
                 camera_back: cameraBack || undefined,
-                image_variant: imageVariant || undefined
+                image_variant: imageVariant || undefined,
+                auto_root: autoRoot
             })
         });
 
@@ -652,7 +676,11 @@ function renderDevices() {
                 ${device.proxy ? '<span class="device-tag">🔒 Proxy</span>' : ''}
                 ${device.rootable === false
                     ? '<span class="device-tag tag-warn" title="Play Store image: adb root unavailable, Frida will not work">⚠ No root</span>'
-                    : '<span class="device-tag tag-ok" title="Google APIs image: adb root available">✓ Root</span>'}
+                    : (device.rooted === true
+                        ? '<span class="device-tag tag-ok" title="Rooted with adb root (auto-root after boot)">✓ Root</span>'
+                        : (device.rooted === false && device.root_error
+                            ? `<span class="device-tag tag-warn" title="${device.root_error.replace(/"/g, '&quot;')}">⚠ Root failed</span>`
+                            : '<span class="device-tag tag-ok" title="Google APIs image: adb root available (auto-roots on launch)">✓ Root capable</span>'))}
             </div>
             <div class="device-actions">
                 ${device.running ? `
@@ -679,9 +707,12 @@ function updateStats() {
 
 // Modal Functions
 function showCreateDialog() {
-    // Prefill camera fields with the defaults chosen in ⚙️ Settings.
+    // Prefill camera fields + auto-root with the defaults chosen in ⚙️ Settings.
     document.getElementById('cameraFront').value = cameraDefaults.front || 'emulated';
     document.getElementById('cameraBack').value = cameraDefaults.back || 'virtualscene';
+    const autoRoot = document.getElementById('autoRoot');
+    if (autoRoot) autoRoot.checked = autoRootDefault;
+    updateImageVariantHint();
     document.getElementById('createModal').classList.add('active');
 }
 
@@ -768,10 +799,42 @@ async function loadSettings() {
         const settingsBack = document.getElementById('settingsCameraBack');
         if (settingsFront) settingsFront.value = cameraDefaults.front;
         if (settingsBack) settingsBack.value = cameraDefaults.back;
+
+        // Auto-root default (saved in Settings, used for new devices)
+        if (typeof savedCameras.auto_root === 'boolean') {
+            autoRootDefault = savedCameras.auto_root;
+        }
+        const settingsAutoRoot = document.getElementById('settingsAutoRoot');
+        if (settingsAutoRoot) settingsAutoRoot.checked = autoRootDefault;
     } catch (error) {
         hint.className = 'hint warn';
         hint.textContent = 'Could not load settings: ' + error;
     }
+}
+
+async function saveAutoRoot() {
+    const btn = document.getElementById('saveAutoRootBtn');
+    const enabled = document.getElementById('settingsAutoRoot').checked;
+
+    btn.disabled = true;
+    try {
+        const response = await fetch('/api/settings/auto-root', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ auto_root: enabled })
+        });
+        const data = await response.json();
+
+        if (data.success) {
+            autoRootDefault = enabled;
+            showToast(data.message || 'Auto-root setting saved', 'success');
+        } else {
+            showToast(data.error || 'Failed to save auto-root setting', 'error');
+        }
+    } catch (error) {
+        showToast('Failed to save auto-root setting', 'error');
+    }
+    btn.disabled = false;
 }
 
 function useWebcamForBothSettings() {

@@ -183,7 +183,11 @@ def list_devices():
               type=click.Choice(["google_apis", "google_apis_playstore"]),
               help="System image: google_apis (default, rootable - Frida/spoofing work) "
                    "or google_apis_playstore (Play Store, no root)")
-def create(model, android, name, proxy, camera_front, camera_back, camera_both, image_variant):
+@click.option("--no-root", "no_root", is_flag=True,
+              help="Disable automatic rooting (adb root) after launch. "
+                   "Rooting is ON by default (Settings toggle).")
+def create(model, android, name, proxy, camera_front, camera_back, camera_both, image_variant,
+           no_root):
     """Create a new emulator device"""
     import config
     from core.device_manager import DeviceManager
@@ -207,6 +211,7 @@ def create(model, android, name, proxy, camera_front, camera_back, camera_both, 
             camera_front=camera_front,
             camera_back=camera_back,
             image_variant=image_variant,
+            auto_root=False if no_root else None,
         )
         print(f"{Fore.GREEN}✓ Device created: {device['name']}{Style.RESET_ALL}")
         if device.get("rootable") is False:
@@ -219,6 +224,7 @@ def create(model, android, name, proxy, camera_front, camera_back, camera_both, 
             print(f"  Proxy: {proxy}")
         camera = device.get("camera", {})
         print(f"  Cameras: front={camera.get('front')} back={camera.get('back')}")
+        print(f"  Auto-root: {'on (adb root after boot)' if device.get('auto_root') else 'off'}")
         print(f"\n{Fore.CYAN}Launch it with:{Style.RESET_ALL} python main.py launch {device['name']}")
     except Exception as e:
         print(f"{Fore.RED}✗ Error: {e}{Style.RESET_ALL}")

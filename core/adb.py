@@ -195,6 +195,7 @@ def root(serial, timeout=60, poll=1.0):
         return False, text or f"adbd did not come back after 'adb root' (state: {state})"
 
     deadline = time.time() + 15
+    empty_hits = 0
     while time.time() < deadline:
         probe = _run(["-s", serial, "shell", "id"], timeout=15)
         uid = ((probe.stdout or "") if probe else "").strip()
@@ -204,6 +205,11 @@ def root(serial, timeout=60, poll=1.0):
             # Not root (yet); give adbd a moment, but don't hang forever.
             time.sleep(poll)
             continue
+        # An empty shell answer means adbd is not responding normally -
+        # don't burn the whole deadline polling it.
+        empty_hits += 1
+        if empty_hits >= 3:
+            return False, text or "adb root ran but the shell answer was empty (adbd not responding normally)"
         time.sleep(poll)
     return False, text or "adb root ran but the shell is not root"
 

@@ -147,6 +147,13 @@ python apply_antidetect.py --device <name>                      # reuse saved id
 python update_devices.py                                        # re-apply props to AVDs
 ```
 
+### 🔓 Automatic rooting
+Devices are **rooted automatically right after boot** (`adb root`, with the adbd-restart handled and verified via `shell id`), so Frida hooks and property spoofing work without any manual step.
+
+- Toggle globally in **⚙️ Settings → 🔓 Rooting**, or per device in the **New Device** dialog ("Root automatically after launch", on by default) / CLI `--no-root`.
+- Only the **Google APIs** image allows `adb root`; on Play Store images the card shows **⚠ No root** and the device file records why.
+- The device card shows the *actual* state: **✓ Root** (rooted this session), **✓ Root capable** (will be rooted at launch), **⚠ Root failed** (hover for the reason), **⚠ No root** (Play Store image). Root state clears on stop because it never survives a reboot.
+
 ### 📷 Cameras (including your real webcam)
 When creating a device (GUI **New Device** dialog or `create` command) you can choose a source for the **back** and **front** camera:
 
@@ -287,6 +294,7 @@ python tests/console_spoof_test.py         # sensor/battery console auth + synta
 python tests/frida_serial_test.py          # serial binding, Frida status/install, spoofing API
 python tests/camera_test.py                # webcam0 selection, launch flags, editing, validation
 python tests/settings_camera_test.py       # Settings camera defaults endpoint, create fallback, pid probe
+python tests/auto_root_test.py             # automatic adb root after boot, opt-outs, settings toggle
 python tests/integration_launch_test.py    # create/launch/stop, image variants, rootable flags
 python tests/adb_recovery_test.py          # offline device healing, adb root, repair endpoint
 ```

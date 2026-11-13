@@ -183,7 +183,8 @@ class DeviceManager:
     # Creation
     # ------------------------------------------------------------------
     def create_device(self, model, android_version="14", name=None, proxy=None,
-                      camera_front=None, camera_back=None, image_variant=None):
+                      camera_front=None, camera_back=None, image_variant=None,
+                      auto_root=None):
         """Create a new device with anti-detection profile.
 
         ``camera_front``/``camera_back`` accept the emulator camera sources:
@@ -193,6 +194,10 @@ class DeviceManager:
         ``image_variant`` selects the system image: ``google_apis`` (default,
         userdebug - supports ``adb root`` so Frida and property spoofing work)
         or ``google_apis_playstore`` (Play Store, no root).
+
+        ``auto_root`` (default: the Settings toggle, on) runs ``adb root``
+        automatically once the device has booted, so Frida and property
+        spoofing always have root without any manual step.
         """
         model_profile = get_model_profile(model)
         if not model_profile:
@@ -229,6 +234,10 @@ class DeviceManager:
         front = validate_camera_mode(camera_front, CAMERA_DEFAULT_FRONT, "front camera")
         back = validate_camera_mode(camera_back, CAMERA_DEFAULT_BACK, "back camera")
 
+        if auto_root is None:
+            # Device-level default comes from the Settings toggle.
+            auto_root = bool(config.load_settings().get("auto_root", True))
+
         device = {
             "name": name,
             "model": model,
@@ -239,6 +248,7 @@ class DeviceManager:
             "image": android_info["image"],
             "image_variant": android_info["image_variant"],
             "rootable": android_info["rootable"],
+            "auto_root": bool(auto_root),
             "proxy": proxy,
             "identity": identity,
             "camera": {"front": front, "back": back},
@@ -685,6 +695,9 @@ tag.id={tag_id}
         device["pid"] = process.pid
         device["log_path"] = str(log_path)
         device["launched_at"] = datetime.now().isoformat()
+        # Root never survives a reboot; the auto-root step below re-applies it.
+        device["rooted"] = None
+        device["root_error"] = None
         self._save_device(device)
 
         # --- Prove the process stays alive --------------------------------
@@ -714,6 +727,11 @@ tag.id={tag_id}
                     f"{timeout}s. It may still be starting — check the log "
                     f"at {log_path}.\nLast log lines:\n{tail}"
                 ) from None
+
+            # Root the freshly booted device automatically (default on), so
+            # spoofing and frida-server never run without root. Real status
+            # is persisted on the device (rooted / root_error) for the UI.
+            self._maybe_auto_root(device, serial)
 
             # Boot is confirmed: apply spoofing synchronously with the
             # correct serial (previously fire-and-forget threads raced boot).
@@ -765,6 +783,18 @@ tag.id={tag_id}
                     pass
 
         self._cleanup_process_entry(name)
+
+        # Root state does not survive the stop; clear it so a restarted
+        # dashboard doesn't claim a stopped device is still rooted.
+        try:
+            stopped = self._load_device(name)
+            if stopped is not None and (stopped.get("rooted") is not None
+                                        or stopped.get("root_error")):
+                stopped["rooted"] = None
+                stopped["root_error"] = None
+                self._save_device(stopped)
+        except Exception:
+            pass
         return True
 
     def delete_device(self, name):
@@ -1324,6 +1354,57 @@ tag.id={tag_id}
             print(f"[AntiDetect] Hardware spoofing applied for {device['name']}")
         except Exception as exc:
             print(f"[AntiDetect] Hardware spoofing warning for {device['name']}: {exc}")
+
+    # ------------------------------------------------------------------
+    # Automatic rooting
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _auto_root_enabled(device):
+        """Per-device setting wins; otherwise the Settings toggle (on)."""
+        if device.get("auto_root") is not None:
+            return bool(device["auto_root"])
+        return bool(config.load_settings().get("auto_root", True))
+
+    def _maybe_auto_root(self, device, serial):
+        """Run ``adb root`` right after boot so spoofing/Frida always have root.
+
+        Never raises: root failures land in ``device["root_error"]`` and just
+        get logged (spoofing retries root on its own anyway).
+        """
+        name = device["name"]
+        if not self._auto_root_enabled(device):
+            print(f"[DeviceManager] auto-root disabled for {name} - skipping adb root")
+            return False
+
+        if device.get("rootable") is False:
+            device["rooted"] = False
+            device["root_error"] = (
+                "Play Store images refuse adb root. Recreate the device with the "
+                "'Google APIs (root)' image to enable Frida and full spoofing."
+            )
+            self._save_device(device)
+            print(f"[DeviceManager] {name}: {device['root_error']}")
+            return False
+
+        print(f"[DeviceManager] auto-rooting {name} ({serial})...")
+        try:
+            ok, detail = adb.root(serial, timeout=60)
+        except Exception as exc:
+            ok, detail = False, str(exc)
+
+        device["rooted"] = bool(ok)
+        device["rooted_at"] = datetime.now().isoformat() if ok else None
+        device["root_error"] = None if ok else (detail or "adb root failed")
+        try:
+            self._save_device(device)
+        except Exception:
+            pass
+
+        if ok:
+            print(f"[DeviceManager] {name} rooted ({serial} is uid=0)")
+        else:
+            print(f"[DeviceManager] auto-root failed for {name}: {detail}")
+        return bool(ok)
 
     def _apply_system_spoof(self, device, serial="emulator-5554"):
         """Apply system-level spoofing via ADB (boot already confirmed)."""

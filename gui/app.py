@@ -90,6 +90,7 @@ def create_app():
                 camera_front=camera_front,
                 camera_back=camera_back,
                 image_variant=data.get("image_variant"),
+                auto_root=data.get("auto_root"),
             )
             response = {"success": True, "device": device}
             if device.get("rootable") is False:
@@ -147,6 +148,21 @@ def create_app():
             "camera_front": front,
             "camera_back": back,
             "message": f"Default cameras saved (front: {front}, back: {back})",
+        })
+
+    @app.route("/api/settings/auto-root", methods=["POST"])
+    def set_auto_root():
+        """Toggle automatic rooting (adb root after every boot)."""
+        data = request.get_json(silent=True) or {}
+        enabled = bool(data.get("auto_root", True))
+        config.save_settings({"auto_root": enabled})
+        return jsonify({
+            "success": True,
+            "auto_root": enabled,
+            "message": ("Devices will be rooted automatically after boot"
+                        if enabled else
+                        "Automatic rooting disabled - spoofing/Frida will "
+                        "request root on demand instead"),
         })
 
     @app.route("/api/settings/sdk", methods=["POST"])

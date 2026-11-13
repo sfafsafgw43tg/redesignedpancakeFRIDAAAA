@@ -140,3 +140,31 @@ is stuck before boot (hardware acceleration missing) — open
 `data/logs/first_device.log` (path is in the error), and enable
 VT-x/AMD-V + "Windows Hypervisor Platform", or start the virtual machine
 from Android Studio once to validate the image.
+
+---
+
+## Round 4: automatic rooting ("root would automatically install")
+
+Devices now **root themselves right after boot** — no manual `adb root` and
+no hunting for the right settings:
+
+- `DeviceManager.launch_device` runs `adb root` (verified via `shell id`,
+  adbd-restart aware) once boot is confirmed, *before* spoofing/Frida, and
+  persists the real outcome (`rooted` / `rooted_at` / `root_error`) so the
+  card can show it: **✓ Root** active · **✓ Root capable** ·
+  **⚠ Root failed** (hover shows why) · **⚠ No root** (Play Store image).
+- **New Device dialog:** "Root automatically after launch" checkbox
+  (on by default; auto-disabled/unchecked when the Play Store image is
+  selected, since those refuse root).
+- **⚙️ Settings → 🔓 Rooting:** global default toggle
+  (`POST /api/settings/auto-root`, persisted in `data/settings.json`);
+  the dialog checkbox is prefilled from it.
+- Per-device override wins over the saved default; CLI: `create --no-root`.
+- Root state is cleared on stop/launch because root never survives a reboot.
+- `adb.root()` no longer burns its whole 15s verify window when adbd answers
+  with an empty shell (fails fast after 3 empty probes).
+- New `tests/auto_root_test.py` (15 checks): default-on rooting, stop
+  clearing, per-device opt-out, Play-Store honesty, settings round-trip
+  and GUI create fallback.
+
+All 10 test suites pass.

@@ -78,6 +78,8 @@ write_exe(SDK / "platform-tools" / "adb", """\
             shift
             if [ "$1" = "getprop" ] && [ "$2" = "sys.boot_completed" ]; then
               echo 1
+            elif [ "$1" = "id" ] || [ "$*" = "id" ]; then
+              echo "uid=0(root) gid=0(root)"
             else
               echo ""
             fi

@@ -152,6 +152,17 @@
                             frida-server.
                         </small>
                     </div>
+                    <div class="form-group" id="autoRootGroup">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="autoRoot" checked>
+                            Root automatically after launch
+                        </label>
+                        <small class="hint" id="autoRootHint">
+                            Runs <code>adb root</code> as soon as the device boots, so Frida hooks
+                            and property spoofing work without any manual step. Requires the
+                            Google APIs (root capable) image above.
+                        </small>
+                    </div>
                     <div class="form-group">
                         <label>Cameras</label>
                         <div class="camera-grid">
@@ -251,6 +262,24 @@
                             Studio started a different adb server).
                         </small>
                         <pre class="install-log" id="adbRepairLog"></pre>
+                    </div>
+
+                    <div class="form-group">
+                        <label>🔓 Rooting</label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="settingsAutoRoot" checked>
+                            Root devices automatically after launch
+                        </label>
+                        <small class="hint">
+                            Runs <code>adb root</code> as soon as a device finishes booting.
+                            Required by Frida and by property spoofing - this is the default
+                            for new devices (each New Device dialog can override it).
+                            Only <em>Google APIs</em> images allow root; Play Store images stay unrooted.
+                        </small>
+                        <button class="btn btn-small btn-primary" type="button"
+                            onclick="saveAutoRoot()" id="saveAutoRootBtn" style="margin-top: 0.5rem;">
+                            Save
+                        </button>
                     </div>
 
                     <div class="form-group">
