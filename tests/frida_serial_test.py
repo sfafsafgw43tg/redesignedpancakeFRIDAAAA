@@ -55,7 +55,7 @@ def stop_fake_device(serial=SERIAL):
 
 import config  # noqa: E402
 from core.device_manager import DeviceManager  # noqa: E402
-from frida.frida_server_manager import FridaServerManager  # noqa: E402
+from frida_toolkit.frida_server_manager import FridaServerManager  # noqa: E402
 
 # --------------------------------------------------------------- setup
 print("== device with a non-5554 serial ==")

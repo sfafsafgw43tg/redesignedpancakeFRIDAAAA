@@ -42,7 +42,7 @@ class FridaHooks:
             print("Frida server not running; install it with `python main.py launch <name> --frida`.")
             return False
         try:
-            from frida.frida_server_manager import FridaServerManager
+            from frida_toolkit.frida_server_manager import FridaServerManager
             return FridaServerManager(self.device_serial).ensure_ready()
         except Exception as exc:
             print(f"Could not prepare frida-server: {exc}")

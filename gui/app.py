@@ -436,7 +436,7 @@ def create_app():
     @app.route("/api/status/frida")
     def get_frida_status():
         """Frida server status for the given (or auto-detected) device."""
-        from frida.frida_server_manager import FridaServerManager
+        from frida_toolkit.frida_server_manager import FridaServerManager
 
         serial = (request.args.get("serial") or "").strip()
         if not serial:
@@ -460,7 +460,7 @@ def create_app():
     @app.route("/api/frida/install", methods=["POST"])
     def install_frida():
         """Download/push/start frida-server in the background."""
-        from frida.frida_server_manager import FridaServerManager
+        from frida_toolkit.frida_server_manager import FridaServerManager
 
         data = request.get_json(silent=True) or {}
         serial = (data.get("serial") or "").strip() or None
@@ -505,7 +505,7 @@ def create_app():
     @app.route("/api/frida/install/status")
     def frida_install_status():
         """Progress of the background frida-server installation."""
-        from frida.frida_server_manager import FridaServerManager
+        from frida_toolkit.frida_server_manager import FridaServerManager
 
         serial = (request.args.get("serial") or "").strip() or None
         with _frida_install_lock:

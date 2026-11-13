@@ -184,7 +184,7 @@ Fixes:
 
 - The `adb_enabled=0` write is **removed** (with a comment explaining why).
 - The anti-detection goal is preserved *without* breaking the channel:
-  `frida/scripts/anti_detect.js` now hooks `Settings$Global.getInt` so
+  `frida_toolkit/scripts/anti_detect.js` now hooks `Settings$Global.getInt` so
   in-app probes of `adb_enabled` and `development_settings_enabled`
   read back **0**, while the real adb stays up.
 - Regression guard in `tests/auto_root_test.py`: the spoof flow must
@@ -199,3 +199,44 @@ Fixes:
 If a device was already bricked this way (`offline` forever after spoof):
 delete it in the dashboard and re-create it — that wipes the userdata
 image where `adb_enabled=0` was persisted.
+
+---
+
+## Round 5: Frida hooks never injected (but logs said "protections applied")
+
+User report: "it says that root applied but I don't see it" - dashboard
+toast: **Failed to apply hooks**, console showed:
+
+```
+[HookManager] Python Frida API failed (module 'frida' has no attribute 'get_usb_device')
+[HookManager] Frida CLI exited with code 2: unrecognized arguments: --no-pause
+```
+
+Root causes, all fixed:
+
+1. **Package shadowing.** The repo had a top-level package literally named
+   `frida/`, so every `import frida` inside the app resolved to OUR package
+   instead of the pip Frida client - hence "no attribute
+   'get_usb_device'". It also poisoned version detection, so the pinned
+   frida-server (16.1.4) did not match the installed client (17.x).
+   The directory is now **`frida_toolkit/`**; the real Frida library
+   imports cleanly (verified: `frida 17.26.3` inside the test venv).
+2. **Dead CLI flag.** frida-tools 13+ removed `--no-pause` (spawned apps
+   resume by default). We now probe `frida --help` once and only pass the
+   flag when the installed CLI advertises it.
+3. **Stale frida-server kept forever.** `data/frida-server.version` marks
+   the downloaded server build; a client/server version mismatch now
+   re-downloads automatically, and an old *running* server on the device
+   is killed and restarted with the matching build.
+4. **Silent partial failure.** `inject_system_wide` / `_run_script` now
+   record `last_error` and `apply_all_protections` returns failure when
+   apps could not be hooked, so the UI toast tells the truth instead of
+   "All protections applied!" while nothing was injected.
+
+Root itself was never the problem here - `adb root` is confirmed working
+(the spoof + frida-server both ran as uid=0). "Root Checker Basic" inside
+the emulator keeps saying *not rooted* **by design**: apps need an `su`
+binary (Magisk/SuperSU) to get root, which is deliberately not installed
+- for anti-detect, "rooted via adb only, invisible to apps" is usually
+exactly what you want. Root verification: `adb shell id` = `uid=0(root)`
+≡ the dashboard's ✓ Root tag.

@@ -33,7 +33,7 @@ class HookManager:
         # None => resolve the running device automatically on each call.
         self.device_serial = device_serial or None
         self.adb = config.ADB_PATH
-        self.scripts_dir = Path(__file__).parent.parent / "frida" / "scripts"
+        self.scripts_dir = Path(__file__).parent.parent / "frida_toolkit" / "scripts"
         self._active_sessions = {}
         self._frida_server_started = False
         self.last_error = None
@@ -131,7 +131,7 @@ class HookManager:
             return False
 
         try:
-            from frida.frida_server_manager import FridaServerManager
+            from frida_toolkit.frida_server_manager import FridaServerManager
 
             manager = FridaServerManager(serial)
             ok, message = manager.install()
@@ -152,7 +152,7 @@ class HookManager:
     def _push_frida_server(self) -> bool:
         """Push frida-server binary to device (downloads if needed)"""
         try:
-            from frida.frida_server_manager import FridaServerManager
+            from frida_toolkit.frida_server_manager import FridaServerManager
             manager = FridaServerManager(self.device_serial)
             return manager.push_to_device()
         except Exception as e:
@@ -305,6 +305,29 @@ var config = deviceIdentity;
             return ["-D", serial]
         return ["-U"]
 
+    _NO_PAUSE_SUPPORTED = None  # cached probe of the installed frida CLI
+
+    @classmethod
+    def _cli_resume_flag(cls, frida_bin):
+        """``--no-pause`` when the installed frida-tools supports it.
+
+        frida-tools 13+ dropped ``--no-pause`` (spawned apps resume by
+        default; ``--pause`` keeps them suspended). Passing it there makes
+        the CLI exit with code 2 before any hook runs - which used to look
+        like hooks were applied while nothing was injected. Probe
+        ``frida --help`` once per process and only include the flag when
+        the installed version actually advertises it.
+        """
+        if cls._NO_PAUSE_SUPPORTED is None:
+            try:
+                proc = subprocess.run([frida_bin, "--help"], capture_output=True,
+                                      text=True, timeout=15)
+                cls._NO_PAUSE_SUPPORTED = "--no-pause" in ((proc.stdout or "")
+                                                           + (proc.stderr or ""))
+            except Exception:
+                cls._NO_PAUSE_SUPPORTED = False
+        return ["--no-pause"] if cls._NO_PAUSE_SUPPORTED else []
+
     def _run_script(self, package_name: str, script_content: str, script_file=None) -> bool:
         """Attach/spawn the app with a script, Python API first then CLI."""
         # Prefer the Python Frida API (no PATH dependency, no PIPE deadlock).
@@ -324,6 +347,7 @@ var config = deviceIdentity;
         except ImportError:
             pass
         except Exception as e:
+            self.last_error = f"Frida python API: {e}"
             print(f"[HookManager] Python Frida API failed ({e}); trying CLI fallback")
 
         log_path = Path(config.DATA_DIR) / "frida_inject.log"
@@ -338,7 +362,8 @@ var config = deviceIdentity;
                 print("[HookManager] Frida not found. Install with: pip install frida-tools")
                 return False
             cmd = [frida_bin, *self._cli_device_flag(),
-                   "-l", str(script_file), "-f", package_name, "--no-pause"]
+                   "-l", str(script_file), "-f", package_name,
+                   *self._cli_resume_flag(frida_bin)]
             log_file = open(log_path, "ab", buffering=0)
             process = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
             # Fail fast: if the frida CLI dies immediately (device
@@ -354,6 +379,8 @@ var config = deviceIdentity;
                     pass
                 print(f"[HookManager] Frida CLI exited with code "
                       f"{process.returncode}: {tail.strip()}")
+                self.last_error = (f"Frida CLI exited with code {process.returncode}: "
+                                   f"{tail.strip()[-200:]}")
                 return False
             self._active_sessions[package_name] = process.pid
             print(f"[HookManager] Hooks injected into {package_name} "
@@ -372,9 +399,16 @@ var config = deviceIdentity;
             "com.android.settings",
             "com.google.android.gms",  # Google Play Services
         ]
+        failed = []
         for app in system_apps:
-            self.inject_hooks(app, identity)
+            if not self.inject_hooks(app, identity):
+                failed.append(app)
             time.sleep(1)
+        if failed:
+            detail = self.last_error or "injection failed"
+            self.last_error = f"Hooks not applied to: {', '.join(failed)} ({detail})"
+            print(f"[HookManager] {self.last_error}")
+            return False
         return True
 
     def spawn_with_hooks(self, package_name: str, identity: Dict) -> bool:
@@ -413,7 +447,9 @@ var config = deviceIdentity;
             print("[HookManager] Could not start Frida server")
             return False
 
-        self.inject_system_wide(identity)
+        if not self.inject_system_wide(identity):
+            print("[HookManager] Some apps could not be hooked - see last_error")
+            return False
 
         print("[HookManager] All protections applied!")
         return True

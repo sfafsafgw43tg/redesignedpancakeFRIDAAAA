@@ -45,6 +45,21 @@ SERVER_PORT = 27042
 _ELF_MACHINES = {"x86_64": 62, "x86": 3, "arm64": 183, "arm": 40}
 
 FRIDA_SERVER_PATH = Path(config.DATA_DIR) / "frida-server"
+FRIDA_SERVER_VERSION_PATH = Path(config.DATA_DIR) / "frida-server.version"
+
+
+def _cached_server_version():
+    try:
+        return FRIDA_SERVER_VERSION_PATH.read_text().strip() or None
+    except OSError:
+        return None
+
+
+def _mark_server_version(version):
+    try:
+        FRIDA_SERVER_VERSION_PATH.write_text(version + "\n")
+    except OSError:
+        pass
 
 
 def client_version():
@@ -321,8 +336,14 @@ class FridaServerManager:
         """Download frida-server from GitHub (retries + integrity checks)."""
         if (not force and self.local_server_path.exists()
                 and check_binary(self.local_server_path, self.device_abi())[0]):
-            self._log(f"[Frida] Using cached server: {self.local_server_path}")
-            return True
+            cached_ver = _cached_server_version()
+            wanted = target_version()
+            if cached_ver == wanted:
+                self._log(f"[Frida] Using cached server: {self.local_server_path} ({cached_ver})")
+                return True
+            self._log(f"[Frida] Cached frida-server is {cached_ver or 'of unknown version'} but "
+                      f"the client needs {wanted} - re-downloading (a client/server version "
+                      f"mismatch makes hooks fail).")
 
         abi = self.device_abi()
         version = target_version()
@@ -357,6 +378,7 @@ class FridaServerManager:
                     pass
                 self._log(f"[Frida] Server extracted to {self.local_server_path} "
                           f"({self.local_server_path.stat().st_size // (1024 * 1024)} MB, {abi})")
+                _mark_server_version(version)
                 return True
             except Exception as exc:
                 last_exc = exc
@@ -414,6 +436,9 @@ class FridaServerManager:
                 self.local_server_path.chmod(0o755)
         except OSError:
             pass
+        # Unknown provenance - drop the cached version marker so the next
+        # client/server version check notices a mismatch.
+        FRIDA_SERVER_VERSION_PATH.unlink(missing_ok=True)
         self._log(f"[Frida] Using local frida-server: {source}")
         return True
 
@@ -491,8 +516,19 @@ class FridaServerManager:
         if not self.is_installed() and not self.push_to_device():
             return False
         if self.is_running():
-            self._log("[Frida] Server already running")
-            return True
+            running_ver = self.remote_version()
+            wanted = target_version()
+            if running_ver and wanted and running_ver.split(".")[:2] != wanted.split(".")[:2]:
+                # Old server from a previous session (e.g. cached 16.x vs a
+                # newer pip frida client) - attach calls fail on version
+                # mismatch, so kill and restart with the matching binary.
+                self._log(f"[Frida] Running server is {running_ver} but client is {wanted} "
+                          f"- restarting with a matching build.")
+                self._adb(["shell", "pkill -x frida-server"], timeout=10)
+                self._adb(["shell", "killall frida-server"], timeout=10)
+            else:
+                self._log("[Frida] Server already running")
+                return True
 
         rootable, build_type = self.device_is_rootable()
         if not rootable:
@@ -575,19 +611,15 @@ class FridaServerManager:
             self.uninstall()
             if not local_file:
                 self.local_server_path.unlink(missing_ok=True)
+                FRIDA_SERVER_VERSION_PATH.unlink(missing_ok=True)
 
         if local_file:
             if not self.install_from_file(local_file):
                 return False, self.last_error
-        elif not self.local_server_path.exists():
-            if not self.download_server():
-                return False, self.last_error
-        else:
-            ok, message = check_binary(self.local_server_path, self.device_abi())
-            if not ok:
-                self._log(f"[Frida] Cached binary unusable ({message}); downloading again.")
-                if not self.download_server(force=True):
-                    return False, self.last_error
+        elif not self.download_server():
+            # download_server() serves the cache when it's usable AND matches
+            # the client version; otherwise it downloads fresh.
+            return False, self.last_error
 
         if not self.push_to_device():
             return False, self.last_error

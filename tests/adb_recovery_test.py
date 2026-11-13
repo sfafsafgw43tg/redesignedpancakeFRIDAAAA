@@ -201,6 +201,10 @@ start_device()
 (STATE / "fail-start").touch()
 (STATE / "frida-installed").unlink(missing_ok=True)
 Path(config.DATA_DIR, "frida-server").write_bytes(fake_server.read_bytes())
+# Mark the cached binary as matching the client, so the version check does
+# not try to re-download from GitHub (this sandbox blocks the release URL).
+from frida_toolkit.frida_server_manager import target_version, FRIDA_SERVER_VERSION_PATH  # noqa: E402
+FRIDA_SERVER_VERSION_PATH.write_text(target_version() + "\n")
 
 response = client.post("/api/devices/adbdev/apply-frida-hooks", json={})
 body = response.get_json()

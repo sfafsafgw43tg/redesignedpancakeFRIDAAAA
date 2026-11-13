@@ -28,7 +28,7 @@ Every device gets a full, internally-consistent identity:
    - **GPU**: real OpenGL ES renderer strings (Mali-G720, Adreno 740/750, Mali-G715) per model.
    - **Sensors**: threaded daemon with `idle` / `pocket` / `hand` motion modes to defeat static-sensor detection.
    - **Battery**: flagship/midrange/budget profiles with time-varying telemetry.
-3. **Runtime Frida hooks (`frida/scripts/*.js`)**
+3. **Runtime Frida hooks (`frida_toolkit/scripts/*.js`)**
    - `anti_detect.js` (565 lines) — `Build`, `TelephonyManager` (IMEI/IMSI/MEID/number/SIM serial), `Settings$Secure`, `File.exists()` (18-entry emulator-path blacklist).
    - `native_hooks.js` (380 lines) — libc-level interception, 31-entry file blacklist, `/proc/cpuinfo` rewriting (`QEMU Virtual CPU` → `Qualcomm Kryo 585`, etc.).
    - `safetynet_bypass.js` (334 lines) — forges SafetyNet/Play Integrity JWS attestation results.
@@ -279,7 +279,7 @@ android-emulator/
 ├── core/                    # device_manager, hook_manager
 ├── spoof/                   # system, hardware, gpu, sensor, battery spoofers
 ├── profiles/                # identity + 50+ real device profiles
-├── frida/                   # FridaHooks, server manager, JS scripts
+├── frida_toolkit/           # FridaHooks, server manager, JS scripts (NOT importable as "frida" - that is the pip package)
 ├── anonymity/               # ProxyManager
 ├── gui/                     # Flask + SocketIO dashboard, desktop window, native dialogs
 ├── core/sdk_setup.py        # installs platform-tools/emulator/system images
