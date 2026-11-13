@@ -319,10 +319,17 @@ body {
 .device-actions {
     display: flex;
     gap: 0.5rem;
+    flex-wrap: wrap;   /* narrow cards used to clip the last button off-card */
+    overflow: visible;
 }
 
 .device-actions .btn {
     flex: 1;
+    min-width: fit-content;
+}
+
+.device-actions .btn-icon {
+    flex: 0 0 auto;    /* the 🗑️ icon button keeps its size, never collapses */
 }
 
 /* Empty State */

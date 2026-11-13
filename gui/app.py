@@ -488,6 +488,15 @@ def create_app():
                 if serial:
                     break
 
+        if not serial:
+            # Fail fast instead of starting a doomed background install
+            # (that left the UI spinning on "Installing...").
+            return jsonify({
+                "success": False,
+                "error": "No running device found. Launch an emulator first, "
+                         "then Install frida-server onto it.",
+            })
+
         with _frida_install_lock:
             if _frida_install["running"]:
                 return jsonify({"success": True, "state": "installing",

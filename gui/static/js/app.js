@@ -92,10 +92,19 @@ async function checkFridaStatus() {
         if (!data.serial) {
             indicator.className = 'status-indicator disconnected';
             text.textContent = 'No device (start an emulator)';
-            installBtn.style.display = 'block';
-            installBtn.textContent = 'Install';
-            fileBtn.style.display = 'block';
+            if (!fridaInstallInFlight) {
+                // Never clobber the label while an install click is running -
+                // the 10s refresh used to fight installFrida() over the
+                // button text and could leave a stuck "Installing...".
+                installBtn.style.display = 'block';
+                installBtn.textContent = 'Install';
+                fileBtn.style.display = 'block';
+            }
             return;
+        }
+
+        if (fridaInstallInFlight) {
+            return;  // installFrida() owns the button until it resolves
         }
 
         if (data.running) {
@@ -131,10 +140,13 @@ async function checkFridaStatus() {
     }
 }
 
+let fridaInstallInFlight = false;
+
 async function installFrida(localPath) {
     const btn = document.getElementById('fridaInstallBtn');
     const fileBtn = document.getElementById('fridaFileBtn');
-    const previousLabel = btn.textContent;
+    if (fridaInstallInFlight) return;   // double-click guard
+    fridaInstallInFlight = true;
     btn.disabled = true;
     if (fileBtn) fileBtn.disabled = true;
     btn.textContent = 'Installing...';
@@ -153,8 +165,10 @@ async function installFrida(localPath) {
         const data = await response.json();
         if (!data.success) {
             showToast(data.error || 'Installation failed to start', 'error');
+            fridaInstallInFlight = false;
             btn.disabled = false;
-            btn.textContent = previousLabel;
+            if (fileBtn) fileBtn.disabled = false;
+            await checkFridaStatus();
             return;
         }
         showToast('Installing frida-server on the device…', 'info');
@@ -162,10 +176,10 @@ async function installFrida(localPath) {
     } catch (error) {
         showToast('Installation failed: ' + error, 'error');
     } finally {
+        fridaInstallInFlight = false;
         btn.disabled = false;
-        btn.textContent = previousLabel;
         if (fileBtn) fileBtn.disabled = false;
-        await checkFridaStatus();
+        await checkFridaStatus();   // refresh picks the correct label
     }
 }
 
