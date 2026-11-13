@@ -177,6 +177,24 @@ class DeviceManager:
                     return ";".join(parts)
         return None
 
+    def set_launch_error(self, name, message):
+        """Persist (or clear with ``None``) the last launch failure for the UI.
+
+        Without this a failed launch was only visible for ~3 seconds as a
+        toast; users then saw a Stopped card and concluded "nothing works".
+        """
+        try:
+            device = self._load_device(name)
+            if device is None:
+                return
+            if message:
+                device["launch_error"] = str(message)
+            else:
+                device.pop("launch_error", None)
+            self._save_device(device)
+        except Exception:
+            pass
+
     def _save_device(self, device):
         device_file = self.devices_dir / f"{device['name']}.json"
         # Don't persist transient runtime keys
@@ -1146,10 +1164,23 @@ tag.id={tag_id}
                 continue
         return used
 
+    @staticmethod
+    def _port_in_use(port):
+        """TCP probe: is something (e.g. a leftover emulator) still bound?"""
+        import socket
+
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+                return True
+        except OSError:
+            return False
+
     def _allocate_console_port(self):
         used = self._used_console_ports()
         port = config.EMULATOR_PORT_START
-        while port in used:
+        # A zombie emulator that adb no longer lists can still own the port;
+        # launching onto it makes the new instance exit with "port in use".
+        while port in used or self._port_in_use(port) or self._port_in_use(port + 1):
             port += 2
             if port > 65534:
                 raise EmulatorLaunchError("No free emulator console port available.")

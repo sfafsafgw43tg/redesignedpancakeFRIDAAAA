@@ -319,6 +319,7 @@ def create_app():
 
         def run():
             try:
+                manager.set_launch_error(name, None)  # clear previous failure
                 if wait_for_boot:
                     _set_state(name, state="booting")
                 manager.launch_device(
@@ -328,6 +329,9 @@ def create_app():
                 socketio.emit("device_launched", {"name": name})
             except Exception as exc:  # surfaced to the UI, not swallowed
                 _set_state(name, state="error", error=str(exc))
+                # Persist so the dashboard card keeps showing why it failed
+                # (the toast alone vanishes after a few seconds).
+                manager.set_launch_error(name, str(exc))
                 socketio.emit("device_launch_failed", {"name": name, "error": str(exc)})
 
         threading.Thread(target=run, daemon=True).start()

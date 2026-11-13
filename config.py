@@ -349,8 +349,10 @@ DEFAULT_GPU_MODE = os.environ.get("EMULATOR_GPU_MODE", "auto")
 EMULATOR_PORT_START = 5554
 # How long to wait for the emulator process to prove it stays alive.
 EMULATOR_START_TIMEOUT = 10
-# How long to wait for sys.boot_completed after launch.
-EMULATOR_BOOT_TIMEOUT = 180
+# How long to wait for sys.boot_completed after launch (sdk on slow drives
+# or first cold boots take a while; the launcher heals transient adb
+# 'offline' states rather than giving up).
+EMULATOR_BOOT_TIMEOUT = int(os.environ.get("EMULATOR_BOOT_TIMEOUT", "240"))
 
 # Anti-detection settings
 HIDE_ROOT = True

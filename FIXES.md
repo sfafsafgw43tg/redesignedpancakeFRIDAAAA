@@ -296,3 +296,30 @@ All 11 test suites pass.
   the adb-safety and qemu-pipe rules above.
 
 All 12 test suites pass.
+
+---
+
+## Round 8: "no root, no spoofing, nothing applied" → always visible why
+
+Symptom: launch failed, card silently reverted to *Stopped*; since the
+auto chain only runs after a confirmed boot, nothing was rooted or
+spoofed, and the only hint was a toast that vanishes in seconds.
+
+Fixes:
+
+- **Zombie-emulator port collisions**: the console-port allocator now
+  TCP-probes both the console and adb port — a crashed emulator that adb
+  no longer lists can no longer steal the port (the new instance used to
+  exit immediately with "port in use").
+- **Launch failures persist**: the last launch error is saved on the
+  device (`launch_error`) and shown as a red `⚠ Launch failed` chip on
+  the card until the next launch clears it.
+- **Details dialog shows the evidence**: "Last launch error" block +
+  live emulator log tail, so the exact cause (GPU, accel, port, image)
+  is one click away instead of buried in `data/logs/*.log`.
+- **No premature "is running" toast**: launch polling waits for the raw
+  chain state, not just the adb-visible emulator.
+- Boot timeout 180s → **240s** (env override `EMULATOR_BOOT_TIMEOUT`) for
+  slow first boots / SDKs on external drives.
+
+If a launch still fails, open 📋 Details — it now tells you exactly why.

@@ -472,15 +472,18 @@ async function pollLaunchStatus(name, attempt) {
     try {
         const response = await fetch(`/api/devices/${name}/status`);
         const status = await response.json();
+        // launch_state is the raw chain state (starting/booting/running/error);
+        // .running can be true while root+spoofing are still being applied.
+        const chainState = status.launch_state || status.state;
 
-        if (status.state === 'error') {
+        if (chainState === 'error') {
             showToast(`Launch failed: ${status.error}`, 'error');
             console.error('Emulator log tail:\n' + (status.log_tail || ''));
             loadDevices();
             return;
         }
 
-        if (status.state === 'running' || status.running) {
+        if (chainState === 'running') {
             showToast(`${name} is running (${status.serial || 'emulator'})`, 'success');
             loadDevices();
             return;
@@ -547,6 +550,15 @@ async function showDeviceDetails(name) {
         const identityResponse = await fetch(`/api/device/${name}/identity`);
         const identity = await identityResponse.json();
 
+        // Runtime state + log tail, so "nothing applied" always has an answer.
+        let runtime = null;
+        try {
+            const statusResponse = await fetch(`/api/devices/${name}/status`);
+            runtime = await statusResponse.json();
+        } catch (e) {
+            runtime = null;
+        }
+
         const modal = document.getElementById('detailsModal');
         const content = document.getElementById('deviceDetails');
 
@@ -576,6 +588,16 @@ async function showDeviceDetails(name) {
                         ? '<br><small class="hint">Root-checker apps still say "not rooted": there is no su binary on purpose - adb/Frida have root (verify: adb shell id). Apps probing Settings.Global.adb_enabled read 0 via the hooks.</small>'
                         : ''}
                 </p>
+                ${device.launch_error ? `
+                <div style="margin-top: 0.75rem;">
+                    <h5 style="margin: 0.75rem 0 0.4rem; color: var(--accent-danger);">Last launch error</h5>
+                    <pre style="white-space: pre-wrap; font-size: 0.75rem; background: rgba(248,81,73,0.08); border: 1px solid rgba(248,81,73,0.35); border-radius: 6px; padding: 0.6rem; max-height: 200px; overflow-y: auto;">${String(device.launch_error).replace(/&/g, '&amp;').replace(/</g, '&lt;')}</pre>
+                </div>` : ''}
+                ${runtime && runtime.log_tail ? `
+                <div style="margin-top: 0.75rem;">
+                    <h5 style="margin: 0.75rem 0 0.4rem; color: var(--text-secondary);">Emulator log (tail)</h5>
+                    <pre style="white-space: pre-wrap; font-size: 0.72rem; background: var(--bg-tertiary); border-radius: 6px; padding: 0.6rem; max-height: 220px; overflow-y: auto;">${String(runtime.log_tail).replace(/&/g, '&amp;').replace(/</g, '&lt;')}</pre>
+                </div>` : ''}
             </div>
             <h5 style="margin: 1rem 0 0.75rem; color: var(--text-secondary);">Device Identity</h5>
             <div class="details-grid">
@@ -703,6 +725,9 @@ function renderDevices() {
             <div class="device-details">
                 <span class="device-tag">Android ${device.android_version}</span>
                 <span class="device-tag">${device.brand}</span>
+                ${device.launch_error && !device.running
+                    ? `<span class="device-tag tag-warn" title="${String(device.launch_error).replace(/"/g, '&quot;')}">⚠ Launch failed - open Details</span>`
+                    : ''}
                 ${device.proxy ? '<span class="device-tag">🔒 Proxy</span>' : ''}
                 ${device.rootable === false
                     ? '<span class="device-tag tag-warn" title="Play Store image: adb root unavailable, Frida will not work">⚠ No root</span>'
