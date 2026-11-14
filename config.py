@@ -393,7 +393,11 @@ def is_system_image_installed(android_info):
 
 
 def installed_image_packages():
-    """All ``system-images;...`` packages present in the SDK."""
+    """All ``system-images;...`` packages present in the SDK.
+
+    Strict: an image only counts when its system.img exists and is
+    non-empty (empty dirs from partial downloads must not be offered).
+    """
     if ANDROID_SDK_ROOT is None:
         return []
     root = Path(ANDROID_SDK_ROOT) / "system-images"
@@ -401,9 +405,41 @@ def installed_image_packages():
         return []
     packages = []
     for img in root.rglob("system.img"):
+        try:
+            if img.stat().st_size == 0:
+                continue
+        except OSError:
+            continue
         rel = img.parent.relative_to(ANDROID_SDK_ROOT)
         packages.append(";".join(rel.parts))
     return sorted(packages)
+
+
+def parse_image_package(package):
+    """``system-images;android-34;google_apis;x86_64`` -> {api, tag, abi}."""
+    parts = str(package or "").split(";")
+    if len(parts) != 4 or parts[0] != "system-images" or not parts[1].startswith("android-"):
+        raise ValueError(
+            f"Not a system-image package: {package!r} "
+            "(expected system-images;android-XX;tag;abi)"
+        )
+    try:
+        api = int(parts[1].split("-", 1)[1])
+    except ValueError:
+        raise ValueError(f"Bad API level in image package: {package!r}") from None
+    return {"package": package, "api": api, "tag": parts[2], "abi": parts[3]}
+
+
+def android_version_for_api(api):
+    """API level -> our Android version key ('34' -> '14')."""
+    api = int(api)
+    for version, info in ANDROID_VERSIONS.items():
+        if info.get("api") == api:
+            return version
+    raise ValueError(
+        f"API level {api} is not one of the supported versions "
+        f"({', '.join(sorted(ANDROID_VERSIONS, key=int))})"
+    )
 
 
 def check_sdk():

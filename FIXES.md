@@ -347,3 +347,50 @@ pid-without-adb state).
 Every issue prints a concrete fix hint; the launch-failure toast now
 points straight at Details + doctor. Covered by tests/doctor_test.py
 (planted problems must surface; restoring state must clear them).
+
+---
+
+## Round 10: spoofing is now REAL (verified on-device) + custom images
+
+**The screenshot told the truth:** Details said *rooted ✓* (and it is —
+`adb shell id` → uid=0) but Settings still showed
+`sdk_gphone64_x86_64` / `EMULATOR37X2X12X0`. Cause: the spoofer ran
+`setprop ro.product.model X`, which Android refuses — `ro.*` props are
+read-only after init. The fake adb used in tests "accepted" it, so the
+pipeline reported success while changing nothing.
+
+**Fix (no Magisk needed — adb-root is already real):**
+1. Runtime `setprop` for everything (works for non-ro keys),
+2. read back — every mismatch is staged,
+3. staged keys merged into **`/data/local.prop`** (pushed as root; init
+   loads it with override semantics on debuggable images at *every* boot;
+   it lives in the AVD's data partition, so the shared system image is
+   untouched),
+4. **one reboot**, re-root, verify again. Anything still mismatched is
+   reported **honestly** (e.g. props that only the boot cmdline can set on
+   some images — Frida hooks still cover `Build.*` for hooked apps).
+   No `disable-verity`/`remount` needed on google_apis (userdebug) images.
+
+**Visibility:** the report is saved on the device — Details now shows a
+✓/✗ line per prop ("Spoof verify report"), and a `⚠ Spoof incomplete`
+chip appears on the card when anything could not be changed. State is
+cleared on stop/relaunch like root/hook state.
+
+**Tests:** fake SDK now *models the real device* — ro.* setprop is
+refused, props are seeded with sdk_gphone defaults at boot, and
+`/data/local.prop` push behaves like init's override loader.
+`tests/spoof_verify_test.py` reproduces the user's symptom, then proves
+the staged fix makes `getprop` actually return the identity values.
+
+**Custom system images:** every image physically present in the SDK's
+`system-images/` directory (downloaded via Android Studio, extracted
+archives, modified images, Android-desktop builds…) is auto-listed in the
+New Device dialog as "Custom: API xx · tag · abi", plus a **📂 Import
+image from folder…** flow (native folder picker or pasted path) that
+copies a folder containing `system.img` into the SDK as a proper
+`system-images;android-<api>;<tag>;x86_64` package and selects it. The
+Android version is derived from the package so it can't disagree. Empty
+`system.img` shells (partial downloads) are never offered. Endpoints:
+`GET /api/system-images`, `POST /api/system-images/import`,
+`POST /api/system-images/pick-folder`. Covered by
+`tests/custom_image_test.py`.

@@ -55,6 +55,25 @@ def setup_fake_sdk():
         echo "device" > "$FAKE_SDK_STATE/$serial.state"
         echo "1" > "$FAKE_SDK_STATE/$serial.boot"
         echo "$avd" > "$FAKE_SDK_STATE/$serial.avd"
+        # Fresh boot: props seeded from the system image (like a real boot;
+        # `-prop` flags are silently ignored by current emulator builds).
+        # /data/local.prop overrides are loaded by init every boot on
+        # userdebug images - so it survives... same here via localprop file.
+        printf '%s\n' \
+          "ro.product.model=sdk_gphone64_x86_64" \
+          "ro.product.brand=google" \
+          "ro.product.manufacturer=Google" \
+          "ro.product.device=emu64xa" \
+          "ro.product.board=emu64xa" \
+          "ro.build.fingerprint=google/sdk_gphone64_x86_64/emu64xa:14/UP1A.231105.001/11223344:userdebug/dev-keys" \
+          "ro.serialno=EMULATOR37X2X12X0" \
+          "ro.boot.serialno=EMULATOR37X2X12X0" \
+          "ro.kernel.qemu=1" \
+          "ro.hardware=ranchu" \
+          "ro.baseband=unknown" \
+          "ro.bootloader=unknown" \
+          > "$FAKE_SDK_STATE/$serial.defaultprops"
+        rm -f "$FAKE_SDK_STATE/$serial.props"
         echo "INFO: emulator starting with args: $@"
         sleep 60
         """)
@@ -164,6 +183,37 @@ def setup_fake_sdk():
                   *"getprop ro.debuggable"*)
                     if [ -e "$state/root-allowed" ]; then echo "1"; else echo "0"; fi
                     ;;
+                  *"setprop "*)
+                    # Real behavior: init refuses ro.* (read-only after boot),
+                    # everything else sticks until reboot.
+                    rest="${cmd#*setprop }"
+                    key="${rest%% *}"
+                    value="${rest#* }"
+                    case "$key" in
+                      ro.*) : ;;
+                      *)
+                        pf="$state/$serial.props"
+                        if [ -e "$pf" ]; then
+                          awk -v k="$key" -F= '$1 != k' "$pf" > "$pf.new" && mv "$pf.new" "$pf"
+                        fi
+                        [ "$value" != "$rest" ] && [ -n "$value" ] && echo "$key=$value" >> "$pf"
+                        ;;
+                    esac
+                    ;;
+                  *"getprop "*)
+                    # Lookup order models real init: /data/local.prop (boot
+                    # override on debuggable images) > runtime setprop values
+                    # > build.prop defaults.
+                    key="${cmd#*getprop }"
+                    key="${key%% *}"
+                    val=""
+                    for f in "$state/$serial.localprop" "$state/$serial.props" "$state/$serial.defaultprops"; do
+                      [ -e "$f" ] || continue
+                      val=$(awk -F= -v k="$key" '$1 == k { print substr($0, index($0, "=") + 1); exit }' "$f")
+                      [ -n "$val" ] && break
+                    done
+                    echo "$val"
+                    ;;
                   *"getprop"*)
                     echo ""
                     ;;
@@ -202,6 +252,9 @@ def setup_fake_sdk():
                   *"pkill"*)
                     rm -f "$state/frida-running"
                     ;;
+                  *"cat /data/local.prop"*)
+                    cat "$state/$serial.localprop" 2>/dev/null || true
+                    ;;
                   *"cat /data/local/tmp/frida.log"*)
                     cat "$state/frida.log" 2>/dev/null || true
                     ;;
@@ -230,14 +283,21 @@ def setup_fake_sdk():
                 ;;
               push)
                 local_file="$2"
-                size=$(wc -c < "$local_file" 2>/dev/null || echo 0)
-                if [ -e "$state/truncate-push" ]; then size=$((size / 2)); fi
-                if [ -e "$state/fail-push" ]; then
-                  echo "adb: error: failed to copy"
-                  exit 1
+                dest="$3"
+                if [ "$dest" = "/data/local.prop" ]; then
+                  # init loads this file at boot on debuggable images.
+                  sed -e 's/\r$//' "$local_file" > "$state/$serial.localprop"
+                  echo "1 file pushed"
+                else
+                  size=$(wc -c < "$local_file" 2>/dev/null || echo 0)
+                  if [ -e "$state/truncate-push" ]; then size=$((size / 2)); fi
+                  if [ -e "$state/fail-push" ]; then
+                    echo "adb: error: failed to copy"
+                    exit 1
+                  fi
+                  echo "$size" > "$state/frida-installed"
+                  echo "1 file pushed"
                 fi
-                echo "$size" > "$state/frida-installed"
-                echo "1 file pushed"
                 ;;
               *) echo "OK" ;;
             esac

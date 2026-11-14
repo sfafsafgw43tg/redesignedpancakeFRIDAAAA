@@ -147,6 +147,24 @@ python apply_antidetect.py --device <name>                      # reuse saved id
 python update_devices.py                                        # re-apply props to AVDs
 ```
 
+### ✅ Verified spoofing (not "trust me" spoofing)
+Spoofing writes are **read back and verified**. `ro.*` properties are
+read-only after init, so after a quick runtime attempt the tool stages the
+rest into `/data/local.prop` + reboots once — then verifies every value
+with `getprop`. The report is shown per-prop in 📋 Details
+("Spoof verify report"), and a `⚠ Spoof incomplete` chip appears if any
+single prop couldn't be changed on that image (Frida hooks still cover
+`Build.*` for hooked apps). Settings → About consequently shows the real
+spoofed model/serial, not `sdk_gphone64_x86_64`.
+
+### 🖼️ Custom system images
+Any image already sitting in `SDK/system-images/` (Android Studio
+downloads, extracted archives, modified images, android-desktop builds)
+is auto-listed in the New Device dialog. Or use **📂 Import image from
+folder…**: point at a directory containing `system.img` (e.g. an extracted
+Lineage/modified build), pick the Android version + tag, and it's copied
+into the SDK as a proper package and selected immediately.
+
 ### 🩺 Doctor (health check)
 When anything misbehaves, run it instead of guessing:
 
@@ -312,6 +330,8 @@ python tests/auto_root_test.py             # automatic adb root after boot, opt-
 python tests/image_install_test.py         # strict system-image detection + auto-install for any version
 python tests/antidetect_static_test.py     # adb-safety + qemu-pipe regression guards
 python tests/doctor_test.py                # health checks flag planted problems with fix hints
+python tests/custom_image_test.py          # custom image detection/import + device creation
+python tests/spoof_verify_test.py          # ro.* refusal -> local.prop staging -> verified props
 python tests/integration_launch_test.py    # create/launch/stop, image variants, rootable flags
 python tests/adb_recovery_test.py          # offline device healing, adb root, repair endpoint
 ```

@@ -207,7 +207,7 @@ class DeviceManager:
     # ------------------------------------------------------------------
     def create_device(self, model, android_version="14", name=None, proxy=None,
                       camera_front=None, camera_back=None, image_variant=None,
-                      auto_root=None):
+                      auto_root=None, custom_image=None):
         """Create a new device with anti-detection profile.
 
         ``camera_front``/``camera_back`` accept the emulator camera sources:
@@ -242,11 +242,26 @@ class DeviceManager:
             )
 
         android_info = dict(config.ANDROID_VERSIONS[android_version])
-        variant = image_variant or config.DEFAULT_IMAGE_VARIANT
-        try:
-            image = config.image_package(android_version, variant)
-        except ValueError as exc:
-            raise ValueError(str(exc)) from None
+        if custom_image:
+            # Explicit package from the SDK's system-images directory (or one
+            # imported from a custom folder). The Android version is derived
+            # from the package so the two can never disagree.
+            parsed = config.parse_image_package(custom_image)
+            android_version = config.android_version_for_api(parsed["api"])
+            android_info = dict(config.ANDROID_VERSIONS[android_version])
+            image = custom_image
+            variant = f"custom:{parsed['tag']}"
+            if not config.is_system_image_installed(image):
+                raise ValueError(
+                    f"Custom image not installed: {image}. Import it via the "
+                    "System Image -> Import from folder flow first."
+                )
+        else:
+            variant = image_variant or config.DEFAULT_IMAGE_VARIANT
+            try:
+                image = config.image_package(android_version, variant)
+            except ValueError as exc:
+                raise ValueError(str(exc)) from None
         android_info = {
             **android_info,
             "image": image,
@@ -722,6 +737,8 @@ tag.id={tag_id}
         device["rooted"] = None
         device["root_error"] = None
         device["hooks_applied"] = None
+        device["spoof_report"] = None
+        device["spoof_error"] = None
         self._save_device(device)
 
         # --- Prove the process stays alive --------------------------------
@@ -814,10 +831,14 @@ tag.id={tag_id}
             stopped = self._load_device(name)
             if stopped is not None and (stopped.get("rooted") is not None
                                         or stopped.get("root_error")
-                                        or stopped.get("hooks_applied") is not None):
+                                        or stopped.get("hooks_applied") is not None
+                                        or stopped.get("spoof_report")
+                                        or stopped.get("spoof_error")):
                 stopped["rooted"] = None
                 stopped["root_error"] = None
                 stopped["hooks_applied"] = None
+                stopped["spoof_report"] = None
+                stopped["spoof_error"] = None
                 self._save_device(stopped)
         except Exception:
             pass
@@ -1406,14 +1427,37 @@ tag.id={tag_id}
             return name in self._hooks_in_flight
 
     def _apply_hardware_spoof(self, device, serial="emulator-5554"):
-        """Apply hardware spoofing (boot already confirmed by caller)."""
+        """Apply hardware spoofing (boot already confirmed by caller).
+
+        The spoofer now *verifies* every prop after staging (runtime setprop
+        → /data/local.prop → reboot as needed) and returns an honest report,
+        which is saved on the device so Details shows exactly which values
+        the guest reports (and which could not be changed on this image).
+        """
         from spoof.hardware_spoof import HardwareSpoofer
 
         try:
             spoofer = HardwareSpoofer(device_serial=serial)
-            spoofer.spoof_all(device["identity"])
-            print(f"[AntiDetect] Hardware spoofing applied for {device['name']}")
+            report = spoofer.spoof_all(device["identity"])
+            device["spoof_report"] = report or None
+            failed = (report or {}).get("failed") or []
+            if failed:
+                device["spoof_error"] = (
+                    f"Could not change props {sorted(failed)} - Settings may "
+                    "still show emulator values for these (Frida hooks cover "
+                    "hooked apps)."
+                )
+                print(f"[AntiDetect] {device['name']}: {device['spoof_error']}")
+            else:
+                device.pop("spoof_error", None)
+                print(
+                    f"[AntiDetect] Hardware spoofing verified for "
+                    f"{device['name']} ({(report or {}).get('method')})"
+                )
+            self._save_device(device)
         except Exception as exc:
+            device["spoof_error"] = f"Spoofing failed: {exc}"
+            self._save_device(device)
             print(f"[AntiDetect] Hardware spoofing warning for {device['name']}: {exc}")
 
     # ------------------------------------------------------------------

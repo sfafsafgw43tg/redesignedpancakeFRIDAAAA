@@ -15,6 +15,7 @@ Launch-path fixes vs. original:
 """
 import threading
 import time
+from pathlib import Path
 
 from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO, emit
@@ -98,6 +99,7 @@ def create_app():
                 camera_front=camera_front,
                 camera_back=camera_back,
                 image_variant=data.get("image_variant"),
+                custom_image=(data.get("custom_image") or "").strip() or None,
                 auto_root=data.get("auto_root"),
             )
             response = {"success": True, "device": device}
@@ -560,6 +562,124 @@ def create_app():
             return jsonify({"success": False, "error": "No file selected."})
         return jsonify({"success": True, "path": path})
 
+    # ------------------------------------------------------------------
+    # Custom system images (detected in the SDK or imported from a folder)
+    # ------------------------------------------------------------------
+    @app.route("/api/system-images")
+    def list_system_images():
+        """Built-in variants + every image physically present in the SDK."""
+        builtin = []
+        for variant, label in (("google_apis", "Google APIs (root capable - Frida & spoofing work)"),
+                               ("google_apis_playstore", "Google APIs + Play Store (no root)")):
+            builtin.append({
+                "kind": "variant",
+                "variant": variant,
+                "label": label,
+                "rootable": variant != "google_apis_playstore",
+            })
+        custom = []
+        for pkg in config.installed_image_packages():
+            try:
+                parsed = config.parse_image_package(pkg)
+            except ValueError:
+                continue
+            try:
+                version = config.android_version_for_api(parsed["api"])
+            except ValueError:
+                version = None  # API unknown to our models table; still listed
+            custom.append({
+                "kind": "custom",
+                "package": pkg,
+                "label": f"API {parsed['api']} · {parsed['tag']} · {parsed['abi']}"
+                         + (f" (Android {version})" if version else ""),
+                "api": parsed["api"],
+                "tag": parsed["tag"],
+                "abi": parsed["abi"],
+                "android_version": version,
+                "rootable": config.image_is_rootable(pkg),
+            })
+        return jsonify({"builtin": builtin, "custom": custom})
+
+    @app.route("/api/system-images/pick-folder", methods=["POST"])
+    def pick_image_folder():
+        """Native folder picker for a directory containing system.img."""
+        from gui.native_dialogs import pick_sdk_directory
+
+        try:
+            path = pick_sdk_directory(
+                title="Select the folder containing system.img (e.g. an extracted image)",
+            )
+        except Exception as exc:
+            return jsonify({"success": False, "error": str(exc)}), 500
+        if not path:
+            return jsonify({"success": False, "error": "No folder selected."})
+        return jsonify({"success": True, "path": path})
+
+    @app.route("/api/system-images/import", methods=["POST"])
+    def import_system_image():
+        """Copy a folder containing system.img into the SDK's system-images.
+
+        Body: {source_dir, api_level, tag, abi} — destination becomes
+        system-images;android-<api>;<tag>;<abi>, which avdmanager accepts.
+        """
+        import shutil as _shutil
+
+        data = request.get_json(silent=True) or {}
+        source = Path(str(data.get("source_dir") or ""))
+        try:
+            api = int(data.get("api_level") or "")
+        except (TypeError, ValueError):
+            return jsonify({"success": False,
+                            "error": "Pick the API level this image matches."}), 400
+        tag = str(data.get("tag") or "").strip()
+        abi = str(data.get("abi") or "").strip().lower()
+        if tag not in ("google_apis", "default", "google_apis_playstore",
+                       "android-desktop"):
+            return jsonify({"success": False,
+                            "error": f"Tag must be one of google_apis/default/"
+                                     f"android-desktop/google_apis_playstore (got {tag or '?'})"}), 400
+        if abi not in ("x86_64", "x86"):
+            return jsonify({"success": False,
+                            "error": "Only x86_64/x86 images run on the PC emulator"}), 400
+        if not source.is_dir():
+            return jsonify({"success": False,
+                            "error": f"Folder not found: {source}"}), 400
+        img = source / "system.img"
+        try:
+            valid = img.exists() and img.stat().st_size > 0
+        except OSError:
+            valid = False
+        if not valid:
+            return jsonify({"success": False,
+                            "error": f"{source} has no usable system.img - "
+                                     "point at the image's root folder "
+                                     "(the one containing system.img, ramdisk.img, ...)"}), 400
+
+        dest = config.ANDROID_SDK_ROOT / "system-images" / f"android-{api}" / tag / abi
+        if (dest / "system.img").exists():
+            return jsonify({"success": False,
+                            "error": f"That image slot already exists ({dest}); "
+                                     "a system.img is already there."}), 409
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if dest.exists():
+                # directory shell left over from a partial import - start clean
+                _shutil.rmtree(dest)
+            total = sum(f.stat().st_size for f in source.rglob("*") if f.is_file())
+            _shutil.copytree(source, dest)
+            copied = dest / "system.img"
+            if not copied.exists() or copied.stat().st_size == 0:
+                raise IOError("system.img did not survive the copy")
+        except Exception as exc:
+            return jsonify({"success": False, "error": f"Import failed: {exc}"}), 500
+
+        package = f"system-images;android-{api};{tag};{abi}"
+        return jsonify({
+            "success": True,
+            "package": package,
+            "message": f"Imported ~{total // (1024 * 1024)} MB as {package}",
+        })
+
     @app.route("/api/doctor")
     def doctor_report():
         """Full health check (also available as `python main.py doctor`)."""
@@ -715,15 +835,32 @@ def create_app():
         identity = device.get("identity", {})
         try:
             SystemSpoofer(device_serial=serial).apply_all_spoofing(identity)
-            HardwareSpoofer(device_serial=serial).spoof_all(identity)
+            report = HardwareSpoofer(device_serial=serial).spoof_all(identity)
         except Exception as exc:
             return jsonify({"success": False, "serial": serial,
                             "error": f"Spoofing failed on {serial}: {exc}"}), 500
 
+        failed = (report or {}).get("failed") or []
+        device["spoof_report"] = report or None
+        if failed:
+            device["spoof_error"] = (
+                f"Could not change props {sorted(failed)}; the rest is verified."
+            )
+        else:
+            device.pop("spoof_error", None)
+        manager._save_device(device)
+
+        summary = (f"All {len((report or {}).get('verified', {}))} props verified "
+                   f"({(report or {}).get('method')})" if report else "")
+        if failed:
+            return jsonify({
+                "success": True, "serial": serial, "spoof_report": report,
+                "message": f"Antidetect applied; BUT props {sorted(failed)} could not "
+                           "be changed on this image (Frida hooks still cover apps).",
+            })
         return jsonify({
-            "success": True,
-            "serial": serial,
-            "message": f"Antidetect applied to {serial}! Restart Settings to see changes.",
+            "success": True, "serial": serial, "spoof_report": report,
+            "message": f"Antidetect applied to {serial}! {summary}. Restart Settings to see changes.",
         })
 
     @app.route("/api/devices/<name>/apply-frida-hooks", methods=["POST"])

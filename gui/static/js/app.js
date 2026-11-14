@@ -316,13 +316,81 @@ function useWebcamForBoth() {
     showToast('Both cameras set to webcam0', 'info');
 }
 
+// Custom system images discovered in/imported into the SDK.
+let customSystemImages = [];
+
+async function loadSystemImages() {
+    try {
+        const res = await fetch('/api/system-images');
+        const data = await res.json();
+        customSystemImages = data.custom || [];
+
+        const select = document.getElementById('imageVariant');
+        if (!select) return;
+        const previous = select.value;
+        select.innerHTML = '';
+        for (const b of (data.builtin || [])) {
+            const option = document.createElement('option');
+            option.value = b.variant;
+            option.textContent = b.label;
+            select.appendChild(option);
+        }
+        if (customSystemImages.length) {
+            const divider = document.createElement('option');
+            divider.disabled = true;
+            divider.textContent = '── images found in the SDK ──';
+            select.appendChild(divider);
+            for (const c of customSystemImages) {
+                const option = document.createElement('option');
+                option.value = 'pkg:' + c.package;
+                option.textContent = 'Custom: ' + c.label + (c.rootable ? '' : ' (no root)');
+                select.appendChild(option);
+            }
+        }
+        if ([...select.options].some(o => o.value === previous)) select.value = previous;
+        updateImageVariantHint();
+    } catch (e) {
+        customSystemImages = [];
+    }
+}
+
+function selectedCustomImage() {
+    const select = document.getElementById('imageVariant');
+    if (select && select.value.startsWith('pkg:')) {
+        return customSystemImages.find(c => 'pkg:' + c.package === select.value) || null;
+    }
+    return null;
+}
+
 function updateImageVariantHint() {
     const select = document.getElementById('imageVariant');
     const hint = document.getElementById('imageVariantHint');
     if (!select || !hint) return;
     const autoRoot = document.getElementById('autoRoot');
     const autoRootHint = document.getElementById('autoRootHint');
-    if (select.value === 'google_apis_playstore') {
+    const versionSelect = document.getElementById('androidVersion');
+
+    const custom = selectedCustomImage();
+    if (custom) {
+        // The custom package pins the Android version (server derives it) —
+        // mirror it in the Android Version dropdown so nobody is surprised.
+        if (custom.android_version && versionSelect &&
+                [...versionSelect.options].some(o => o.value === custom.android_version)) {
+            versionSelect.value = custom.android_version;
+        }
+        hint.innerHTML = 'Custom image: <code>' + custom.package + '</code> — the Android ' +
+            'version follows this selection' + (custom.rootable ? '.' :
+                '; <strong>⚠ no root</strong> (playstore tag).');
+        if (autoRoot) {
+            autoRoot.disabled = !custom.rootable;
+            autoRoot.checked = custom.rootable ? autoRootDefault : false;
+        }
+        if (autoRootHint) {
+            autoRootHint.innerHTML = custom.rootable
+                ? 'Runs <code>adb root</code> as soon as the device boots.'
+                : '⚠ This image tag refuses <code>adb root</code>.';
+        }
+    } else if (select.value === 'google_apis_playstore') {
         hint.innerHTML = '<strong>⚠ No root:</strong> frida-server and property spoofing ' +
             'will <em>not</em> work on this device. Pick "Google APIs" if you need Frida.';
         if (autoRoot) {
@@ -426,7 +494,10 @@ async function createDevice() {
     const cameraFront = document.getElementById('cameraFront').value.trim();
     const cameraBack = document.getElementById('cameraBack').value.trim();
     const imageVariantEl = document.getElementById('imageVariant');
-    const imageVariant = imageVariantEl ? imageVariantEl.value : undefined;
+    const selectedImage = imageVariantEl ? imageVariantEl.value : undefined;
+    const customImage = selectedImage && selectedImage.startsWith('pkg:')
+        ? selectedImage.slice(4) : undefined;
+    const imageVariant = customImage ? undefined : selectedImage;
     const autoRootEl = document.getElementById('autoRoot');
     const autoRoot = autoRootEl ? autoRootEl.checked : undefined;
 
@@ -447,6 +518,7 @@ async function createDevice() {
                 camera_front: cameraFront || undefined,
                 camera_back: cameraBack || undefined,
                 image_variant: imageVariant || undefined,
+                custom_image: customImage || undefined,
                 auto_root: autoRoot
             })
         });
@@ -624,6 +696,21 @@ async function showDeviceDetails(name) {
                     <h5 style="margin: 0.75rem 0 0.4rem; color: var(--accent-danger);">Last launch error</h5>
                     <pre style="white-space: pre-wrap; font-size: 0.75rem; background: rgba(248,81,73,0.08); border: 1px solid rgba(248,81,73,0.35); border-radius: 6px; padding: 0.6rem; max-height: 200px; overflow-y: auto;">${String(device.launch_error).replace(/&/g, '&amp;').replace(/</g, '&lt;')}</pre>
                 </div>` : ''}
+                ${device.spoof_error ? `
+                <div style="margin-top: 0.75rem;">
+                    <h5 style="margin: 0.75rem 0 0.4rem; color: var(--accent-warning);">Spoofing warning</h5>
+                    <pre style="white-space: pre-wrap; font-size: 0.75rem; background: rgba(210,153,34,0.08); border: 1px solid rgba(210,153,34,0.35); border-radius: 6px; padding: 0.6rem;">${String(device.spoof_error).replace(/&/g, '&amp;').replace(/</g, '&lt;')}</pre>
+                </div>` : ''}
+                ${device.spoof_report ? `
+                <div style="margin-top: 0.75rem;">
+                    <h5 style="margin: 0.75rem 0 0.4rem; color: var(--text-secondary);">Spoof verify report (${String(device.spoof_report.method || '?')})</h5>
+                    <div style="font-size: 0.78rem;">
+                        ${Object.entries(device.spoof_report.verified || {}).map(([k, v]) =>
+                            `<div style="color: var(--accent-success);">✓ <code>${k}</code> = ${String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;')}</div>`).join('')}
+                        ${(device.spoof_report.failed || []).map(k =>
+                            `<div style="color: var(--accent-danger);">✗ <code>${k}</code> (stayed emulator default)</div>`).join('')}
+                    </div>
+                </div>` : ''}
                 ${runtime && runtime.log_tail ? `
                 <div style="margin-top: 0.75rem;">
                     <h5 style="margin: 0.75rem 0 0.4rem; color: var(--text-secondary);">Emulator log (tail)</h5>
@@ -759,6 +846,9 @@ function renderDevices() {
                 ${device.launch_error && !device.running
                     ? `<span class="device-tag tag-warn" title="${String(device.launch_error).replace(/"/g, '&quot;')}">⚠ Launch failed - open Details</span>`
                     : ''}
+                ${device.spoof_error && device.running
+                    ? `<span class="device-tag tag-warn" title="${String(device.spoof_error).replace(/"/g, '&quot;')}">⚠ Spoof incomplete - Details</span>`
+                    : ''}
                 ${device.proxy ? '<span class="device-tag">🔒 Proxy</span>' : ''}
                 ${device.rootable === false
                     ? '<span class="device-tag tag-warn" title="Play Store image: adb root unavailable, Frida will not work">⚠ No root</span>'
@@ -803,8 +893,94 @@ function showCreateDialog() {
     document.getElementById('cameraBack').value = cameraDefaults.back || 'virtualscene';
     const autoRoot = document.getElementById('autoRoot');
     if (autoRoot) autoRoot.checked = autoRootDefault;
-    updateImageVariantHint();
+    loadSystemImages().then(updateImageVariantHint);
     document.getElementById('createModal').classList.add('active');
+}
+
+// ---- Custom system-image import (folder containing system.img) ----
+
+function showImageImport() {
+    const box = document.getElementById('imageImportBox');
+    const shown = box.style.display !== 'none';
+    box.style.display = shown ? 'none' : 'block';
+    if (!shown) {
+        const versionSel = document.getElementById('importImageVersion');
+        if (versionSel && !versionSel.options.length) {
+            const androidSel = document.getElementById('androidVersion');
+            for (const opt of androidSel.options) {
+                versionSel.appendChild(new Option(opt.textContent, opt.value));
+            }
+        }
+    }
+}
+
+async function pickImageFolder() {
+    try {
+        const response = await fetch('/api/system-images/pick-folder', { method: 'POST' });
+        const data = await response.json();
+        if (data.success && data.path) {
+            document.getElementById('importImagePath').value = data.path;
+        } else if (data.error && !/no folder selected/i.test(data.error)) {
+            showToast(data.error, 'error');
+        }
+    } catch (e) {
+        showToast('Folder picker failed - paste the path manually', 'error');
+    }
+}
+
+// Android version key -> API level (matches config.ANDROID_VERSIONS).
+const VERSION_TO_API = { '14': 34, '13': 33, '12': 31, '11': 30, '10': 29, '9': 28 };
+
+async function importImage() {
+    const path = document.getElementById('importImagePath').value.trim();
+    const version = document.getElementById('importImageVersion').value;
+    const tag = document.getElementById('importImageTag').value;
+    const goBtn = document.getElementById('importImageGo');
+    if (!path) {
+        showToast('Pick (or paste) the folder containing system.img', 'error');
+        return;
+    }
+    const apiLevel = VERSION_TO_API[version];
+    if (!apiLevel) {
+        showToast('Pick the Android version this image matches', 'error');
+        return;
+    }
+    const versionInfo = { api: apiLevel };
+    goBtn.disabled = true;
+    goBtn.textContent = 'Copying… (can be GBs)';
+    showToast('Importing image - a 3-5 GB copy can take a while', 'info');
+    try {
+        const response = await fetch('/api/system-images/import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                source_dir: path,
+                api_level: versionInfo.api,
+                tag: tag,
+                abi: 'x86_64'
+            })
+        });
+        const data = await response.json();
+        if (data.success) {
+            showToast(data.message || 'Image imported', 'success');
+            hideImageImport();
+            await loadSystemImages();
+            const select = document.getElementById('imageVariant');
+            select.value = 'pkg:' + data.package;
+            updateImageVariantHint();
+        } else {
+            showToast(data.error || 'Import failed', 'error');
+        }
+    } catch (e) {
+        showToast('Import request failed', 'error');
+    }
+    goBtn.disabled = false;
+    goBtn.textContent = 'Import';
+}
+
+function hideImageImport() {
+    const box = document.getElementById('imageImportBox');
+    if (box) box.style.display = 'none';
 }
 
 function hideCreateDialog() {
