@@ -264,6 +264,31 @@ body {
     color: var(--accent-success);
 }
 
+/* Health-check (doctor) report rows */
+.doctor-row {
+    padding: 0.55rem 0.7rem;
+    border-radius: 6px;
+    margin-top: 0.45rem;
+    background: var(--bg-tertiary);
+    font-size: 0.82rem;
+}
+
+.doctor-error { border-left: 3px solid var(--accent-danger); }
+.doctor-warn { border-left: 3px solid var(--accent-warning); }
+.doctor-ok, .doctor-info { border-left: 3px solid var(--accent-success); }
+
+.doctor-detail {
+    color: var(--text-secondary);
+    margin-top: 0.15rem;
+    word-break: break-word;
+}
+
+.doctor-fix {
+    color: var(--accent-warning);
+    margin-top: 0.15rem;
+    word-break: break-word;
+}
+
 .device-status.starting {
     background: rgba(210, 153, 34, 0.15);
     color: var(--accent-warning);

@@ -361,6 +361,37 @@ async function loadAdbStatus() {
     }
 }
 
+async function runDoctor() {
+    const btn = document.getElementById('doctorBtn');
+    const box = document.getElementById('doctorResults');
+    btn.disabled = true;
+    btn.textContent = 'Checking…';
+    box.innerHTML = '';
+    try {
+        const response = await fetch('/api/doctor');
+        const data = await response.json();
+        const icons = { ok: '✅', info: 'ℹ️', warn: '⚠️', error: '❌' };
+        const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+        box.innerHTML = (data.checks || []).map(c => `
+            <div class="doctor-row doctor-${c.severity}">
+                <div class="doctor-title">${icons[c.severity] || ''} <strong>${esc(c.title)}</strong></div>
+                <div class="doctor-detail">${esc(c.detail || '')}</div>
+                ${c.fix ? `<div class="doctor-fix">→ ${esc(c.fix)}</div>` : ''}
+            </div>`).join('');
+        if (data.worst === 'error') {
+            showToast('Health check found errors - see the Health check section', 'error');
+        } else if (data.worst === 'warn') {
+            showToast('Health check has warnings - see the Health check section', 'warning');
+        } else {
+            showToast('All health checks pass ✓', 'success');
+        }
+    } catch (error) {
+        showToast('Health check failed to run', 'error');
+    }
+    btn.disabled = false;
+    btn.textContent = 'Run doctor';
+}
+
 async function repairAdb() {
     const button = document.getElementById('repairAdbBtn');
     const log = document.getElementById('adbRepairLog');
@@ -477,7 +508,7 @@ async function pollLaunchStatus(name, attempt) {
         const chainState = status.launch_state || status.state;
 
         if (chainState === 'error') {
-            showToast(`Launch failed: ${status.error}`, 'error');
+            showToast(`Launch failed: ${status.error}. See 📋 Details for the log tail, or ⚙️ Settings → 🩺 Run doctor for a full health check.`, 'error');
             console.error('Emulator log tail:\n' + (status.log_tail || ''));
             loadDevices();
             return;

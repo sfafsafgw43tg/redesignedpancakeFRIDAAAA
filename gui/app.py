@@ -560,6 +560,14 @@ def create_app():
             return jsonify({"success": False, "error": "No file selected."})
         return jsonify({"success": True, "path": path})
 
+    @app.route("/api/doctor")
+    def doctor_report():
+        """Full health check (also available as `python main.py doctor`)."""
+        from core.doctor import run_doctor
+
+        checks, worst = run_doctor()
+        return jsonify({"success": True, "worst": worst, "checks": checks})
+
     @app.route("/api/adb/repair", methods=["POST"])
     def repair_adb():
         """Heal an offline device / restart the local adb server.

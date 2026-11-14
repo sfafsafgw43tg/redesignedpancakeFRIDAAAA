@@ -411,5 +411,33 @@ def check_sdk():
 cli.add_command(check_sdk, "check-sdk")
 
 
+@cli.command()
+def doctor():
+    """Full health check: SDK, images, adb, acceleration, devices, Frida.
+
+    Exit code is non-zero when any check is at ERROR level (warnings pass),
+    so scripts can gate on it.
+    """
+    from core.doctor import run_doctor
+
+    icons = {"ok": f"{Fore.GREEN}✓{Style.RESET_ALL}",
+             "info": f"{Fore.CYAN}ℹ{Style.RESET_ALL}",
+             "warn": f"{Fore.YELLOW}⚠{Style.RESET_ALL}",
+             "error": f"{Fore.RED}✗{Style.RESET_ALL}"}
+
+    print(f"\n{Fore.CYAN}🩺 AntiDetect Doctor{Style.RESET_ALL}\n")
+    checks, worst = run_doctor()
+    for c in checks:
+        print(f"  {icons[c['severity']]} {c['title']}")
+        print(f"      {c['detail']}")
+        if c["fix"]:
+            print(f"      {Fore.YELLOW}→ fix: {c['fix']}{Style.RESET_ALL}")
+    print()
+    if worst == "error":
+        print(f"{Fore.RED}Some checks failed - fix the items above and re-run "
+              f"'python main.py doctor'.{Style.RESET_ALL}")
+        raise SystemExit(1)
+
+
 if __name__ == "__main__":
     cli()

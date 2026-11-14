@@ -323,3 +323,27 @@ Fixes:
   slow first boots / SDKs on external drives.
 
 If a launch still fails, open 📋 Details — it now tells you exactly why.
+
+---
+
+## Round 9: Doctor — self-diagnosing health checks
+
+Every real-machine failure this project has hit maps onto something
+checkable in advance, so there's now a single report that hunts all of
+them: `python main.py doctor` (CLI, non-zero exit on errors) and
+**⚙️ Settings → 🩺 Health check → Run doctor** in the dashboard
+(`GET /api/doctor`, `core/doctor.py`).
+
+Checks: Python ≥ 3.9 · SDK layout (emulator/adb/avdmanager/sdkmanager) ·
+duplicate cmdline-tools copies (the `latest`+`latest-2` confusion seen in
+real logs) · platform-tools age (below 33 is flagged - that lineage broke
+adb against Android 13+ images here) · adb server responsiveness ·
+installed vs missing system images (strict: non-empty system.img) ·
+settings.json integrity · Frida client/server version alignment · hardware
+acceleration probe (`-accel-check`) · per-device consistency (AVD ini
+exists, console port not stolen by a zombie/other AVD, stale
+pid-without-adb state).
+
+Every issue prints a concrete fix hint; the launch-failure toast now
+points straight at Details + doctor. Covered by tests/doctor_test.py
+(planted problems must surface; restoring state must clear them).

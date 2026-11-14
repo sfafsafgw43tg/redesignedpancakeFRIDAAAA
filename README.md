@@ -147,6 +147,19 @@ python apply_antidetect.py --device <name>                      # reuse saved id
 python update_devices.py                                        # re-apply props to AVDs
 ```
 
+### 🩺 Doctor (health check)
+When anything misbehaves, run it instead of guessing:
+
+```powershell
+python main.py doctor
+```
+or in the app: **⚙️ Settings → 🩺 Health check → Run doctor**. It checks the
+Python version, SDK layout, duplicate cmdline-tools copies, platform-tools
+age, adb server, installed system images, settings file, Frida client/server
+version alignment, hardware acceleration and every saved device (missing AVD
+files, zombie emulators holding ports, stale pid/serial state) — each item
+comes with a concrete fix hint.
+
 ### 🔓 Automatic rooting
 Devices are **rooted automatically right after boot** (`adb root`, with the adbd-restart handled and verified via `shell id`), so Frida hooks and property spoofing work without any manual step.
 
@@ -298,6 +311,7 @@ python tests/settings_camera_test.py       # Settings camera defaults endpoint, 
 python tests/auto_root_test.py             # automatic adb root after boot, opt-outs, settings toggle
 python tests/image_install_test.py         # strict system-image detection + auto-install for any version
 python tests/antidetect_static_test.py     # adb-safety + qemu-pipe regression guards
+python tests/doctor_test.py                # health checks flag planted problems with fix hints
 python tests/integration_launch_test.py    # create/launch/stop, image variants, rootable flags
 python tests/adb_recovery_test.py          # offline device healing, adb root, repair endpoint
 ```

@@ -267,6 +267,21 @@
                     </div>
 
                     <div class="form-group">
+                        <label>🩺 Health check</label>
+                        <div class="input-row">
+                            <button class="btn btn-primary" onclick="runDoctor()" id="doctorBtn">
+                                Run doctor
+                            </button>
+                        </div>
+                        <small class="hint">
+                            Checks the SDK, system images, adb server, acceleration,
+                            Frida versions and every saved device - with a concrete fix
+                            for anything wrong. Same report as <code>python main.py doctor</code>.
+                        </small>
+                        <div id="doctorResults"></div>
+                    </div>
+
+                    <div class="form-group">
                         <label>🔓 Rooting</label>
                         <label class="checkbox-label">
                             <input type="checkbox" id="settingsAutoRoot" checked>
