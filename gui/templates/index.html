@@ -30,7 +30,7 @@
             <section class="devices-section">
                 <div class="section-header">
                     <h2>📱 Your Devices</h2>
-                    <button class="btn btn-primary" onclick="showCreateDialog()">
+                    <button class="btn btn-primary" onclick="showCreateDialog()" title="Create a new emulated device (identity, image, cameras, proxy)">
                         <span>+</span> New Device
                     </button>
                 </div>
@@ -122,17 +122,17 @@
                 </div>
                 <div class="modal-body">
                     <div class="form-group">
-                        <label>Device Name (optional)</label>
+                        <label>Device Name (optional) <span class="info-tip" data-tip="A friendly name for the card (e.g. 'Work IG Pixel'). Leave empty to auto-generate one from the model.">?</span></label>
                         <input type="text" id="deviceName" placeholder="Auto-generated if empty">
                     </div>
                     <div class="form-group">
-                        <label>Phone Model</label>
+                        <label>Phone Model <span class="info-tip" data-tip="The device identity apps will see: Build.MODEL/BRAND/BUILD/DEVICE, fingerprint, IMEI/serial ranges and screen size all follow the model you pick here.">?</span></label>
                         <select id="phoneModel">
                             <option value="">Loading models...</option>
                         </select>
                     </div>
                     <div class="form-group">
-                        <label>Android Version</label>
+                        <label>Android Version <span class="info-tip" data-tip="Which Android system image to run. Newer = better app compatibility; 12-14 are the safest on emulators.">?</span></label>
                         <select id="androidVersion">
                             <option value="14">Android 14 (API 34)</option>
                             <option value="13">Android 13 (API 33)</option>
@@ -143,7 +143,7 @@
                         </select>
                     </div>
                     <div class="form-group">
-                        <label>System Image</label>
+                        <label>System Image <span class="info-tip" data-tip="Only Google APIs (userdebug) images allow adb root - required for Frida hooks and real ro.* spoofing. Play Store images cannot be rooted at all. Custom/imported images appear automatically once in the SDK.">?</span></label>
                         <select id="imageVariant" onchange="updateImageVariantHint()">
                             <option value="google_apis">Google APIs (root capable - Frida &amp; spoofing work)</option>
                             <option value="google_apis_playstore">Google Play Store (no root - Frida will not work)</option>
@@ -157,6 +157,7 @@
                         <!-- Import a custom image (a folder with system.img) into the SDK -->
                         <div style="margin-top: 0.6rem;">
                             <button class="btn btn-small btn-secondary" type="button"
+                                title="Copy a local image folder (contains system.img, e.g. an extracted/modified/Lineage build) into the SDK and use it"
                                 onclick="showImageImport()" id="importImageBtn">
                                 📂 Import image from folder…
                             </button>
@@ -190,6 +191,7 @@
                         <label class="checkbox-label">
                             <input type="checkbox" id="autoRoot" checked>
                             Root automatically after launch
+                            <span class="info-tip" data-tip="Runs adb root right after boot so spoofing (ro.* props, Settings/serial values) and Frida hooks work with zero manual steps. On by default; disabling it leaves the device unrooted and Frida/spoofing will not work.">?</span>
                         </label>
                         <small class="hint" id="autoRootHint">
                             Runs <code>adb root</code> as soon as the device boots, so Frida hooks
@@ -198,7 +200,7 @@
                         </small>
                     </div>
                     <div class="form-group">
-                        <label>Cameras</label>
+                        <label>Cameras <span class="info-tip" data-tip="webcam0 passes your real webcam to the emulator (strong anti-detect). virtualscene renders a synthetic scene; emulated is the plain default. Changed here per-device; defaults live in Settings.">?</span></label>
                         <div class="camera-grid">
                             <div>
                                 <small class="hint">Back camera</small>
@@ -225,7 +227,7 @@
                         </button>
                     </div>
                     <div class="form-group">
-                        <label>Proxy (optional)</label>
+                        <label>Proxy (optional) <span class="info-tip" data-tip="Route the emulator traffic through an HTTP/SOCKS proxy (host:port or full URL). Per-device - leave empty for direct traffic.">?</span></label>
                         <input type="text" id="proxyAddress" placeholder="socks5://127.0.0.1:1080">
                     </div>
                 </div>
@@ -258,7 +260,7 @@
                 </div>
                 <div class="modal-body">
                     <div class="form-group">
-                        <label>Android SDK folder</label>
+                        <label>Android SDK folder <span class="info-tip" data-tip="The folder containing platform-tools/emulator/cmdline-tools (e.g. G:\sdk). Use Browse - do not type it by hand. If Studio installed another SDK, this tool uses only the one shown here.">?</span></label>
                         <div class="input-row">
                             <input type="text" id="sdkPathInput" placeholder="e.g. C:\\Users\\you\\AppData\\Local\\Android\\Sdk">
                             <button class="btn btn-secondary" onclick="browseSdkFolder()">Browse…</button>
@@ -268,7 +270,7 @@
                     </div>
 
                     <div class="form-group">
-                        <label>Install / repair SDK components</label>
+                        <label>Install / repair SDK components <span class="info-tip" data-tip="Downloads platform-tools, the emulator and a system image via sdkmanager. Required once before any device can launch. 3+ GB download depending on version.">?</span></label>
                         <div class="input-row">
                             <select id="sdkInstallVersion"></select>
                             <button class="btn btn-primary" onclick="installSdkComponents()" id="sdkInstallBtn">
@@ -281,7 +283,7 @@
                     </div>
 
                     <div class="form-group">
-                        <label>ADB connection</label>
+                        <label>ADB connection <span class="info-tip" data-tip="adb can get stuck in (offline) right after adb root or when Android Studio started its own server. Repair kills/restarts adb and reconnects the emulator - safe to click any time.">?</span></label>
                         <div class="input-row">
                             <button class="btn btn-primary" onclick="repairAdb()" id="repairAdbBtn">
                                 Repair ADB
@@ -299,7 +301,7 @@
                     </div>
 
                     <div class="form-group">
-                        <label>🩺 Health check</label>
+                        <label>🩺 Health check <span class="info-tip" data-tip="Runs all diagnostics (SDK layout, images, adb server, acceleration, Frida alignment, per-device port/zombie checks) and prints a concrete fix for every issue. Use this before reporting any failure.">?</span></label>
                         <div class="input-row">
                             <button class="btn btn-primary" onclick="runDoctor()" id="doctorBtn">
                                 Run doctor
@@ -314,7 +316,7 @@
                     </div>
 
                     <div class="form-group">
-                        <label>🔓 Rooting</label>
+                        <label>🔓 Rooting <span class="info-tip" data-tip="Default for new devices: adb root right after boot. Frida + real ro.* spoofing require it. Play Store images refuse root - create devices with Google APIs image if you need Frida.">?</span></label>
                         <label class="checkbox-label">
                             <input type="checkbox" id="settingsAutoRoot" checked>
                             Root devices automatically after launch
@@ -332,7 +334,7 @@
                     </div>
 
                     <div class="form-group">
-                        <label>📷 Default cameras (used for new devices)</label>
+                        <label>📷 Default cameras (used for new devices) <span class="info-tip" data-tip="webcam0 = your real webcam forwarded into the emulator (strongest anti-detect for camera checks). virtualscene = synthetic 3D scene. emulated = static fake. Per-device override in the create dialog.">?</span></label>
                         <div class="camera-grid">
                             <div>
                                 <small class="hint">Back camera</small>
@@ -362,7 +364,7 @@
                     </div>
 
                     <div class="form-group">
-                        <label>App mode</label>
+                        <label>App mode <span class="info-tip" data-tip="Desktop shell (pywebview with native window + folder pickers) vs plain browser tab. Browser always works; the desktop shell enables native dialogs.">?</span></label>
                         <small class="hint" id="desktopHint">Checking…</small>
                     </div>
                 </div>

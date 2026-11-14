@@ -861,16 +861,16 @@ function renderDevices() {
             <div class="device-actions">
                 ${device.starting ? `
                     <span class="hint">auto-root + spoof + hooks are applying…</span>
-                    <button class="btn btn-danger btn-sm" onclick="stopDevice('${device.name}')">Stop</button>
+                    <button class="btn btn-danger btn-sm" onclick="stopDevice('${device.name}')" title="Abort launch and stop the emulator">Stop</button>
                 ` : device.running ? `
-                    <button class="btn btn-primary btn-sm" onclick="applyAntidetect('${device.name}')" title="Apply device spoofing">🎭 Spoof</button>
-                    <button class="btn btn-warning btn-sm" onclick="applyFridaHooks('${device.name}')" title="Apply Frida hooks">🔧 Hooks</button>
-                    <button class="btn btn-danger btn-sm" onclick="stopDevice('${device.name}')">Stop</button>
+                    <button class="btn btn-primary btn-sm" onclick="applyAntidetect('${device.name}')" title="Re-apply identity spoofing (model/serial/build number/ids) and verify each prop with getprop">🎭 Spoof</button>
+                    <button class="btn btn-warning btn-sm" onclick="applyFridaHooks('${device.name}')" title="(Re)inject the anti-detect Frida hooks into Settings">🔧 Hooks</button>
+                    <button class="btn btn-danger btn-sm" onclick="stopDevice('${device.name}')" title="Shut down the emulator (spoof/root state clears; next launch re-applies everything)">Stop</button>
                 ` : `
-                    <button class="btn btn-success btn-sm" onclick="launchDevice('${device.name}')">🚀 Launch</button>
+                    <button class="btn btn-success btn-sm" onclick="launchDevice('${device.name}')" title="Boot the emulator, then auto-root + spoof (verified) + Frida hooks, hands-free">🚀 Launch</button>
                 `}
-                <button class="btn btn-secondary btn-sm" onclick="showDeviceDetails('${device.name}')">📋 Details</button>
-                <button class="btn btn-icon btn-sm" onclick="deleteDevice('${device.name}')" title="Delete">🗑️</button>
+                <button class="btn btn-secondary btn-sm" onclick="showDeviceDetails('${device.name}')" title="Identity, root/spoof/hook status, spoof verify report and emulator log">📋 Details</button>
+                <button class="btn btn-icon btn-sm" onclick="deleteDevice('${device.name}')" title="Delete this device and its AVD (storage is freed)">🗑️</button>
             </div>
         </div>
     `).join('');

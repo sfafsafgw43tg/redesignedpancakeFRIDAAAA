@@ -264,6 +264,55 @@ body {
     color: var(--accent-success);
 }
 
+/* Hover "?" help hints */
+.info-tip {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 15px;
+    height: 15px;
+    margin-left: 0.4rem;
+    border-radius: 50%;
+    border: 1px solid var(--text-secondary);
+    color: var(--text-secondary);
+    font-size: 10px;
+    font-weight: 700;
+    cursor: help;
+    vertical-align: middle;
+    user-select: none;
+    flex: 0 0 auto;
+}
+
+.info-tip::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: 130%;
+    left: 50%;
+    transform: translateX(-60%);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    font-size: 0.75rem;
+    font-weight: 400;
+    line-height: 1.35;
+    padding: 0.5rem 0.6rem;
+    border-radius: 6px;
+    width: 240px;
+    z-index: 300;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.12s;
+    pointer-events: none;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+    white-space: normal;
+}
+
+.info-tip:hover::after {
+    opacity: 1;
+    visibility: visible;
+}
+
 /* Health-check (doctor) report rows */
 .doctor-row {
     padding: 0.55rem 0.7rem;
