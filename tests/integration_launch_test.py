@@ -71,7 +71,16 @@ write_exe(SDK / "platform-tools" / "adb", """\
       -s)
         serial="$2"; shift 2
         case "$1" in
-          get-state) echo device ;;
+          get-state)
+            # After `adb reboot` the device briefly drops away (real adbd).
+            if [ -e "$FAKE_SDK_STATE/$serial.reboot-pending" ]; then
+              rm -f "$FAKE_SDK_STATE/$serial.reboot-pending"
+              echo offline
+              exit 0
+            fi
+            echo device
+            ;;
+          reboot) echo 1 > "$FAKE_SDK_STATE/$serial.reboot-pending"; echo rebooted ;;
           reconnect) echo reconnected ;;
           root) echo "restarting adbd as root" ;;
           shell)

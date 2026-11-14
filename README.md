@@ -148,14 +148,21 @@ python update_devices.py                                        # re-apply props
 ```
 
 ### ✅ Verified spoofing (not "trust me" spoofing)
-Spoofing writes are **read back and verified**. `ro.*` properties are
-read-only after init, so after a quick runtime attempt the tool stages the
-rest into `/data/local.prop` + reboots once — then verifies every value
-with `getprop`. The report is shown per-prop in 📋 Details
-("Spoof verify report"), and a `⚠ Spoof incomplete` chip appears if any
-single prop couldn't be changed on that image (Frida hooks still cover
-`Build.*` for hooked apps). Settings → About consequently shows the real
-spoofed model/serial, not `sdk_gphone64_x86_64`.
+Spoofing writes are **read back and verified** with `getprop`. `ro.*`
+properties are read-only after init, so the pipeline escalates until the
+guest really reports the identity: runtime `setprop` → `/data/local.prop`
++ reboot (works on some userdebug images) → `adb disable-verity` +
+remount + **rewrite build.prop** + reboot (works where local.prop can't —
+Android 14 google_apis, proven on-device). Build number, display id,
+incremental, `ro.build.type=user`, tags=release-keys and device name are
+all derived from the profile fingerprint, so Settings → About shows a real
+retail phone — model, serial, build number, no "userdebug … dev-keys"
+tell. The per-prop ✓/✗ report ("Spoof verify report") lives in 📋 Details;
+a `⚠ Spoof incomplete` chip appears if any prop is unchangeable on an
+image (Frida hooks still cover `Build.*` for hooked apps). Note: the
+build.prop rewrite edits the shared system image — last write wins for
+every AVD using that image. Originals are backed up on-device at
+`/data/local/antidetect-buildprop-backup/`.
 
 ### 🖼️ Custom system images
 Any image already sitting in `SDK/system-images/` (Android Studio

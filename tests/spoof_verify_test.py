@@ -89,8 +89,8 @@ mgr._apply_hardware_spoof(mgr.get_device("spoofdev"), serial=SERIAL)
 device = mgr.get_device("spoofdev")
 check("device carries spoof_report", bool(device.get("spoof_report")),
       str(device.get("spoof_report")))
-check("first report method mentions local.prop staging",
-      "local.prop" in (report.get("method") or ""), report.get("method"))
+check("report method escalated to build.prop (A14 ignores local.prop)",
+      "build.prop" in (report.get("method") or ""), report.get("method"))
 check("no spoof_error when fully verified", not device.get("spoof_error"))
 # Second pass is a no-op: props already match, so no staging is needed.
 check("second pass is a verified no-op",

@@ -137,7 +137,14 @@ r = client.get("/api/devices")
 devices = r.get_json()
 check("api device list", any(d["name"] == "guidev" for d in devices))
 
-r = client.post("/api/devices/guidev/apply-antidetect")
+# The automatic hook chain may still be running right after launch_state
+# reaches 'running'; the 409 'still launching' guard is intentional - retry
+# until it opens (same pattern as the launch_state poll above).
+for _ in range(60):
+    r = client.post("/api/devices/guidev/apply-antidetect")
+    if r.status_code != 409:
+        break
+    time.sleep(1)
 body = r.get_json()
 check("apply-antidetect uses device serial", body.get("success") is True, json.dumps(body)[:400])
 

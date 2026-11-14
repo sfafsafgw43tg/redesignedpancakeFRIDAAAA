@@ -145,6 +145,11 @@ def setup_fake_sdk():
             serial="$2"; shift 2
             case "$1" in
               get-state)
+                if [ -e "$state/$serial.reboot-pending" ]; then
+                  rm -f "$state/$serial.reboot-pending"
+                  echo "offline"
+                  exit 0
+                fi
                 decay "$state/$serial.state"
                 cat "$state/$serial.state" 2>/dev/null || { echo "error: device '$serial' not found"; exit 1; }
                 ;;
@@ -166,6 +171,20 @@ def setup_fake_sdk():
                 ;;
               wait-for-device)
                 echo "ok"
+                ;;
+              reboot)
+                # Real adbd drops for a moment after `adb reboot`; the next
+                # get-state poll answers 'offline' once.
+                echo 1 > "$state/$serial.reboot-pending"
+                echo "rebooted"
+                ;;
+              disable-verity)
+                echo "Successfully disabled verity on /"
+                echo "Now reboot your device for settings to take effect"
+                ;;
+              remount)
+                echo "Using overlayfs for /system"
+                echo "remount succeeded"
                 ;;
               shell)
                 shift
@@ -201,13 +220,15 @@ def setup_fake_sdk():
                     esac
                     ;;
                   *"getprop "*)
-                    # Lookup order models real init: /data/local.prop (boot
-                    # override on debuggable images) > runtime setprop values
-                    # > build.prop defaults.
+                    # Lookup order models a modern (Android 14) boot:
+                    # runtime setprop values > build.prop (image edits) >
+                    # seeded build.prop defaults. /data/local.prop is NOT
+                    # honored for ro.* on A14 userdebug (proven on-device),
+                    # so it deliberately does not take part here.
                     key="${cmd#*getprop }"
                     key="${key%% *}"
                     val=""
-                    for f in "$state/$serial.localprop" "$state/$serial.props" "$state/$serial.defaultprops"; do
+                    for f in "$state/$serial.props" "$state/image-build.prop" "$state/$serial.defaultprops"; do
                       [ -e "$f" ] || continue
                       val=$(awk -F= -v k="$key" '$1 == k { print substr($0, index($0, "=") + 1); exit }' "$f")
                       [ -n "$val" ] && break
@@ -252,8 +273,35 @@ def setup_fake_sdk():
                   *"pkill"*)
                     rm -f "$state/frida-running"
                     ;;
-                  *"cat /data/local.prop"*)
+                    *"cat /data/local.prop"*)
                     cat "$state/$serial.localprop" 2>/dev/null || true
+                    ;;
+                  *"cat "*build.prop*)
+                    # build.prop content: image edits (cp'ed in) override the
+                    # seeded defaults of this boot.
+                    imgp="$state/image-build.prop"
+                    if [ -e "$imgp" ]; then
+                      cat "$imgp"
+                    else
+                      # image ships generic emulator props
+                      cat "$state/$serial.defaultprops" 2>/dev/null | \
+                        awk -F= '{print $0}' | while read -r l; do [ -n "$l" ] && echo "$l"; done
+                    fi
+                    ;;
+                  *"test -f "*)
+                    # backup bookkeeping (`test -f X || cp ...`) - no-op
+                    echo ""
+                    ;;
+                  *"cp "*build.prop*)
+                    # `cp /data/local/tmp/.adbp /system/build.prop` = image edit
+                    case "$cmd" in
+                      "cp /data/local/tmp/.adbp "*|"cp /data/local/tmp/.adbp"*)
+                        if [ -e "$state/tmp-adbp" ]; then
+                          cp "$state/tmp-adbp" "$state/image-build.prop"
+                        fi
+                        ;;
+                    esac
+                    echo ""
                     ;;
                   *"cat /data/local/tmp/frida.log"*)
                     cat "$state/frida.log" 2>/dev/null || true
@@ -284,20 +332,29 @@ def setup_fake_sdk():
               push)
                 local_file="$2"
                 dest="$3"
-                if [ "$dest" = "/data/local.prop" ]; then
-                  # init loads this file at boot on debuggable images.
-                  sed -e 's/\r$//' "$local_file" > "$state/$serial.localprop"
-                  echo "1 file pushed"
-                else
-                  size=$(wc -c < "$local_file" 2>/dev/null || echo 0)
-                  if [ -e "$state/truncate-push" ]; then size=$((size / 2)); fi
-                  if [ -e "$state/fail-push" ]; then
-                    echo "adb: error: failed to copy"
-                    exit 1
-                  fi
-                  echo "$size" > "$state/frida-installed"
-                  echo "1 file pushed"
-                fi
+                case "$dest" in
+                  /data/local.prop)
+                    # init would load this on boot... (A14 ignores it; kept
+                    # so the pipeline can stage it, but getprop drops it)
+                    sed -e 's/\r$//' "$local_file" > "$state/$serial.localprop"
+                    echo "1 file pushed"
+                    ;;
+                  /data/local/tmp/.adbp)
+                    # staging area for build.prop rewrites
+                    sed -e 's/\r$//' "$local_file" > "$state/tmp-adbp"
+                    echo "1 file pushed"
+                    ;;
+                  *)
+                    size=$(wc -c < "$local_file" 2>/dev/null || echo 0)
+                    if [ -e "$state/truncate-push" ]; then size=$((size / 2)); fi
+                    if [ -e "$state/fail-push" ]; then
+                      echo "adb: error: failed to copy"
+                      exit 1
+                    fi
+                    echo "$size" > "$state/frida-installed"
+                    echo "1 file pushed"
+                    ;;
+                esac
                 ;;
               *) echo "OK" ;;
             esac

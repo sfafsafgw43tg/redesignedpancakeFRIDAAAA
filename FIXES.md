@@ -359,17 +359,30 @@ points straight at Details + doctor. Covered by tests/doctor_test.py
 read-only after init. The fake adb used in tests "accepted" it, so the
 pipeline reported success while changing nothing.
 
-**Fix (no Magisk needed — adb-root is already real):**
+**Fix (no Magisk needed — adb-root is real, uid=0 verified):**
 1. Runtime `setprop` for everything (works for non-ro keys),
 2. read back — every mismatch is staged,
-3. staged keys merged into **`/data/local.prop`** (pushed as root; init
-   loads it with override semantics on debuggable images at *every* boot;
-   it lives in the AVD's data partition, so the shared system image is
-   untouched),
-4. **one reboot**, re-root, verify again. Anything still mismatched is
-   reported **honestly** (e.g. props that only the boot cmdline can set on
-   some images — Frida hooks still cover `Build.*` for hooked apps).
-   No `disable-verity`/`remount` needed on google_apis (userdebug) images.
+3. stage A: merge into **`/data/local.prop`** + reboot (works on some
+   userdebug images; on Android 14 userdebug it demonstrably does NOT
+   override ro.* — proven on-device with the verify read-back),
+4. stage B (when A leaves any mismatch): **`adb disable-verity` → reboot →
+   `remount`/`remount,rw` → rewrite the build.prop files** that exist
+   (`/system`, `/product`, `/system_ext`, `/vendor`, `/vendor/default.prop`,
+   `/odm/etc/build.prop`) with originals backed up to
+   `/data/local/antidetect-buildprop-backup/` → final reboot → verify.
+   Note this edits the shared system image, so the last-spoofed identity
+   wins for every AVD on that image (documented; userspace-only use).
+5. Anything still mismatched is reported **honestly** (props that only the
+   boot cmdline can set on a given image — Frida hooks still cover
+   `Build.*` for hooked apps).
+
+The prop set grew too: Model, device name (Settings device_name +
+bluetooth_name), serial AND **build number** (`ro.build.id`,
+`ro.build.display.id`, `ro.build.version.incremental`,
+`ro.build.version.release`, `ro.build.type=...user`, `ro.build.tags`,
+`ro.build.flavor`, `ro.build.description`, `ro.product.name`) are all
+parsed from the profile fingerprint — so "userdebug … dev-keys" stops
+leaking, and Settings → About shows a real retail build number.
 
 **Visibility:** the report is saved on the device — Details now shows a
 ✓/✗ line per prop ("Spoof verify report"), and a `⚠ Spoof incomplete`

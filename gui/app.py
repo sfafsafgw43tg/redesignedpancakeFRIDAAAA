@@ -918,7 +918,11 @@ def create_app():
         return jsonify({
             "success": success,
             "serial": serial,
-            "message": "Frida hooks applied to Settings" if success else "Failed to apply hooks",
+            "message": (
+                "Frida hooks applied to Settings" if success
+                else "Failed to apply hooks: " + (hooks.last_error or
+                     "injection came back unsuccessful")
+            ),
         })
 
     @socketio.on("connect")

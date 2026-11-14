@@ -88,6 +88,27 @@ class HardwareSpoofer:
             "ro.baseband": identity.get("baseband", "unknown"),
             "ro.bootloader": identity.get("bootloader", ""),
         }
+        # Build number / type / tags derive from the profile fingerprint so
+        # everything in Settings -> About (Build number row!) is consistent,
+        # and 'userdebug' stops leaking (that's a huge emulator tell):
+        #   google/husky/husky:14/UP1A.231005.007/10754064:user/release-keys
+        fp = identity.get("fingerprint", "")
+        import re
+        m = re.match(r"([^/]+)/([^/]+)/([^/:]+):(\w+)/([^/:]+)/([^/:]+):(\w+)/([\w-]+)", fp or "")
+        if m:
+            brand, product, device, release, build_id, incremental, build_type, build_tags = m.groups()
+            props.update({
+                "ro.product.name": product,
+                "ro.build.product": device,
+                "ro.build.id": build_id,
+                "ro.build.display.id": build_id,
+                "ro.build.version.incremental": incremental,
+                "ro.build.version.release": release,
+                "ro.build.type": build_type,
+                "ro.build.tags": build_tags,
+                "ro.build.flavor": f"{device}-{build_type}",
+                "ro.build.description": f"{device}-{build_type} {release} {build_id} {incremental} {build_tags}",
+            })
         props = {k: str(v) for k, v in props.items() if v}
 
         report = {"props": props, "method": None, "verified": {}, "failed": []}
@@ -102,19 +123,32 @@ class HardwareSpoofer:
             self.prop_report = report
             return
 
-        # 2) staged overrides via /data/local.prop + one reboot
-        self._install_local_prop(mismatched)
+        # 2) staged overrides. Method A: /data/local.prop + one reboot
+        #    (works on some userdebug images). Method B (escalation when A
+        #    proves ineffective, e.g. Android 14 userdebug where local.prop
+        #    cannot override ro.*): disable-verity + remount + rewrite the
+        #    build.prop files in place, reboot, verify.
+        still = mismatched
+        method = "runtime setprop"
+        self._install_local_prop(still)
         self._reboot_and_ready()
+        still = {k: v for k, v in still.items() if self._getprop(k) != v}
+        if still:
+            self._rewrite_build_props(still)
+            self._reboot_and_ready()
+            still = {k: v for k, v in still.items() if self._getprop(k) != v}
+            if still:
+                method = "runtime setprop + build.prop (ro.* unchanged)"
+            else:
+                method = "runtime setprop + disable-verity + build.prop reboot"
+        else:
+            method = "runtime setprop + /data/local.prop + reboot"
 
-        still = {k: v for k, v in mismatched.items() if self._getprop(k) != v}
-        applied = {k: v for k, v in mismatched.items() if k not in still}
         runtime_ok = {k: v for k, v in props.items() if k not in mismatched}
-
+        applied = {k: v for k, v in mismatched.items() if k not in still}
         report["verified"] = {**runtime_ok, **applied}
         report["failed"] = [k for k in still]
-        report["method"] = ("runtime setprop + /data/local.prop + reboot"
-                            if applied or not still
-                            else "runtime setprop (ro.* unchanged)")
+        report["method"] = method
         self.prop_report = report
         if still:
             print(
@@ -152,17 +186,105 @@ class HardwareSpoofer:
         self._shell_root("chmod 644 /data/local.prop; chown root:root /data/local.prop")
 
     def _reboot_and_ready(self, timeout=300):
-        """Reboot and wait until fully booted + rooted again."""
+        """Reboot and wait until fully booted + rooted again.
+
+        Waits for adbd to actually *drop* first (max a few seconds), then
+        for a clean boot — fast on instant emulators, patient on real ones.
+        """
         from core import adb as core_adb
 
         self._adb(["reboot"])
-        time.sleep(5)  # let adbd actually drop before we start waiting
+        deadline = time.time() + 8
+        dropped = False
+        while time.time() < deadline:
+            state = core_adb.get_state(self.device_serial)
+            if state != "device":
+                dropped = True
+                break
+            time.sleep(0.5)
+        if not dropped:
+            # adb still answers - either a stub or a very fast device; tiny pause
+            time.sleep(1)
+        else:
+            time.sleep(1)  # let it settle past the drop
         try:
             core_adb.wait_until_ready(self.device_serial, timeout=timeout)
         except Exception:
             pass
         self._root_done = False
         self._adb_root()
+
+    # Property files that shape what Settings/Build report, in the order a
+    # device loads them. Files that don't exist on a given image are skipped.
+    _BUILD_PROP_FILES = (
+        "/system/build.prop",
+        "/product/build.prop",
+        "/system_ext/build.prop",
+        "/vendor/build.prop",
+        "/vendor/default.prop",
+        "/odm/etc/build.prop",
+    )
+
+    def _rewrite_build_props(self, props):
+        """disable-verity + remount + rewrite build.prop files in place.
+
+        The reliable way to change ro.* on current emulator images: init
+        reads these files at boot; with dm-verity disabled the partitions
+        are writable (root via `adb root`). Originals are backed up to
+        /data/local/antidetect-buildprop-backup/ on first edit.
+        """
+        import tempfile
+
+        # 1) Verity must be off before remount can stick.
+        self._adb(["disable-verity"])
+        self._reboot_and_ready()
+
+        # 2) Remount rw (adb remount text varies; error is caught at write).
+        out = (self._adb(["remount"]) or "").lower()
+        if "not" in out and ("success" in out or "remount" in out.replace("not remount", "")):
+            pass  # ambiguous old output - the write attempt decides
+        self._shell_root("mount -o remount,rw /system 2>/dev/null; "
+                         "mount -o remount,rw /vendor 2>/dev/null; "
+                         "mount -o remount,rw /product 2>/dev/null")
+
+        # 3) Edit every build.prop that exists.
+        tmpname = f"adbp-{os.getpid()}.txt"
+        local = Path(tempfile.gettempdir()) / tmpname
+        for path in self._BUILD_PROP_FILES:
+            original = self._shell_root(f"cat {path} 2>/dev/null") or ""
+            if not original.strip():
+                continue  # file not on this image
+            backup = f"/data/local/antidetect-buildprop-backup/{path.replace('/', '_')}"
+            self._shell_root(
+                f"test -f {backup} || cp {path} {backup} 2>/dev/null")
+
+            lines = []
+            pending = dict(props)
+            for line in original.splitlines():
+                stripped = line.strip()
+                if stripped and not stripped.startswith("#") and "=" in stripped:
+                    key = stripped.split("=", 1)[0].strip()
+                    if key in pending:
+                        lines.append(f"{key}={pending.pop(key)}")
+                        continue
+                lines.append(line)
+            for key, value in pending.items():
+                lines.append(f"{key}={value}")
+            content = "\n".join(lines) + "\n"
+
+            local.write_text(content, encoding="utf-8")
+            self._adb(["push", str(local), "/data/local/tmp/.adbp"])
+            self._shell_root(f"cp /data/local/tmp/.adbp {path}")
+            # Verify the write actually landed (read-only fs -> bail early).
+            rewritten = self._shell_root(f"cat {path} 2>/dev/null") or ""
+            if props[list(props)[0]] not in rewritten and all(
+                    f"{k}={v}" not in rewritten for k, v in props.items()):
+                print(f"[AntiDetect] {path} is read-only even after remount")
+        self._shell_root("rm -f /data/local/tmp/.adbp")
+        try:
+            local.unlink()
+        except OSError:
+            pass
     
     def spoof_imei(self, imei):
         """Best-effort IMEI spoof (requires root; silently no-ops if blocked).
@@ -196,6 +318,13 @@ class HardwareSpoofer:
             "shell", "settings", "put", "secure",
             "android_id", android_id
         ])
+
+    def spoof_device_name(self, name):
+        """Settings -> About 'Device name' row + Bluetooth name."""
+        if not name:
+            return
+        self._adb(["shell", "settings", "put", "global", "device_name", name])
+        self._adb(["shell", "settings", "put", "secure", "bluetooth_name", name])
     
     def spoof_mac_address(self, mac_address):
         """Spoof WiFi MAC address (requires root; best-effort)"""
@@ -288,6 +417,7 @@ class HardwareSpoofer:
         self.spoof_imei(identity.get("imei"))
         self.spoof_serial(identity.get("serial"))
         self.spoof_android_id(identity.get("android_id"))
+        self.spoof_device_name(identity.get("model"))
         self.spoof_mac_address(identity.get("wifi_mac"))
         self.spoof_bluetooth_mac(identity.get("bluetooth_mac"))
         self.spoof_baseband(identity.get("baseband"))
